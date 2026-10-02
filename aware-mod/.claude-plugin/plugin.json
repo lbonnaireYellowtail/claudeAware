@@ -1,11 +1,11 @@
 {
   "name": "aware-mod",
-  "version": "2.0.0",
+  "version": "1.0.0",
   "description": "Usage awareness above the prompt: context bar, live 5h/7d plan limits synced across terminals, and weekly spend",
   "author": {
     "name": "lbonnaireYellowtail"
   },
-  "repository": "https://github.com/lbonnaireYellowtail/claudeAwareMod",
+  "repository": "https://github.com/lbonnaireYellowtail/claudeAware",
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {

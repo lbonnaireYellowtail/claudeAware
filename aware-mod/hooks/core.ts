@@ -1,8 +1,9 @@
 // The line's logic, with nothing of the engine in it, so it can be tested on its
 // own. Ported from the v1.4.0 statusline.py, guards unchanged (ADR-0001 /
-// ADR-0003), file formats too: every session on this machine reads and writes
-// the same files under ~/.cache/claude-statusline/, so each has to distrust
-// what the others wrote exactly as it distrusts itself.
+// ADR-0003), file formats too: every session on this machine, on this mod or on
+// the statusline script beside it, reads and writes the same files under
+// ~/.cache/claude-statusline/, so each has to distrust what the others wrote
+// exactly as it distrusts itself.
 
 import type { Level, Levels, RateLimits, RlWindow, Snapshot } from '../types'
 

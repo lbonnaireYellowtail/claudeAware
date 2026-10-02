@@ -4,7 +4,7 @@
     "name": "lbonnaireYellowtail"
   },
   "metadata": {
-    "description": "claudeAwareMod: usage awareness for Claude Code, as a mod"
+    "description": "claudeAware: usage awareness for Claude Code"
   },
   "plugins": [
     {

@@ -1,7 +1,7 @@
-# claudeAwareMod
+# claudeAware
 
-Usage awareness for Claude Code, as a [mod](https://claude.dev/blog/getting-started-with-claude-code-mods/)
-(`aware-mod`). A coloured band above the prompt shows, in real time:
+Usage awareness for Claude Code (formerly `claude-statusline`). One line shows, in real
+time:
 
 ```
 🧠 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬  62.7k (6%) | 🕐 5h 12% →4h55m | 📅 7d 10% →2d5h $35 ⇄ | 🤖 Opus 4.8 (1M context)
@@ -9,7 +9,7 @@ Usage awareness for Claude Code, as a [mod](https://claude.dev/blog/getting-star
 
 - **🧠 bar** — context tokens used, drawn as a bar filling toward a soft target
   (default 100k) so you can keep sessions lean at a glance. The `(6%)` is the real
-  fill of the full context window. Turn `ctxBar` off for the compact
+  fill of the full context window. Either tool can draw the compact
   `🧠 ctx 62.7k (6%)` label instead.
 - **🕐 5h / 📅 7d** — your actual Anthropic rate-limit usage, with time-until-reset —
   **kept in sync across all your open terminals** (see below).
@@ -20,61 +20,52 @@ Usage awareness for Claude Code, as a [mod](https://claude.dev/blog/getting-star
 - **🤖** — the active model.
 
 Colors: green → under target, yellow at 60%+, red + ⚠️ at 85%+. The ctx bar's unfilled
-cells are the same color faded, so the whole gauge reads as one strip. When a gauge
-first enters the red band the mod also toasts once, e.g. `5h limit at 88%, resets →1h20m`.
+cells are the same color faded, so the whole gauge reads as one strip.
 
-The figures come from Claude Code itself (`$.session.usage()` and the `session.measure`
-event), so there is no script to run, no `statusLine` setting, and nothing to install
-besides the plugin.
+Everything comes straight from Claude Code's own figures, so it's always current — no
+background jobs, no log parsing.
 
-> Formerly `claude-statusline`, a Python `statusLine` script. v2.0.0 replaced it with
-> this mod; see [Coming from the script](#coming-from-the-script).
+## Two ways to run it
 
-## Install
+| | [`statusline/`](statusline/README.md) | [`aware-mod/`](aware-mod/README.md) |
+| --- | --- | --- |
+| What it is | a Python `statusLine` command | a [Claude Code mod](https://claude.dev/blog/getting-started-with-claude-code-mods/) (function-hook plugin) |
+| Where it draws | Claude Code's status line, under the prompt | a coloured band above the prompt (or a plain pinned line) |
+| Needs | Python 3, a `statusLine` block in `settings.json` | Claude Code with mods; nothing else |
+| Configured by | `STATUSLINE_*` env vars | `/config` options |
+| Extra | — | a toast when a gauge enters the red band |
+
+**Statusline:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lbonnaireYellowtail/claudeAware/main/install.sh | bash
+```
+
+then add the `statusLine` block it prints to `~/.claude/settings.json`
+([other install options](statusline/README.md#install)).
+
+**Mod:**
 
 ```
-/plugin marketplace add lbonnaireYellowtail/claudeAwareMod
+/plugin marketplace add lbonnaireYellowtail/claudeAware
 /plugin install aware-mod@aware
-/reload-plugins
 ```
 
-Or from a clone, for one session: `claude --plugin-dir ./aware-mod`.
-
-Mods run with Claude Code's own access, so read [`aware-mod/hooks/`](aware-mod/hooks)
-before installing, as you would any package. It reads and writes only
-`~/.cache/claude-statusline/`, makes no network calls, and runs one command:
-`rm` on its own 30-day-old ledger files.
-
-### Coming from the script
-
-Remove the `statusLine` block from `~/.claude/settings.json` (and
-`~/.claude/scripts/statusline.py` if you like), then install the mod. Your cross-terminal
-cache and weekly cost history carry over: the mod uses the same files under
-`~/.cache/claude-statusline/`, in the same format. The script's env vars become options
-(below). The last script release is tag `v1.4.0`.
-
-## Options
-
-Set in `/config`, or under `pluginConfigs` in `settings.json`:
-
-| Option        | Default  | Meaning                                                    | Was                        |
-| ------------- | -------- | ---------------------------------------------------------- | -------------------------- |
-| `display`     | `band`   | `band` above the prompt, or `status`: a plain pinned line   | —                          |
-| `ctxTarget`   | `100000` | Soft context-token target the bar fills toward             | `STATUSLINE_CTX_TARGET`    |
-| `ctxBar`      | `true`   | Bar, or the compact `ctx 62.7k` label                      | `STATUSLINE_CTX_BAR`       |
-| `ctxBarCells` | `15`     | Bar width in cells (1–60)                                  | `STATUSLINE_CTX_BAR_CELLS` |
-| `cautionPct`  | `60`     | Yellow at/above this % of target/limit                     | `STATUSLINE_CAUTION_PCT`   |
-| `warnPct`     | `85`     | Red + ⚠️ (and the toast) at/above this %                    | `STATUSLINE_WARN_PCT`      |
-| `weekBudget`  | `0`      | API-key layout: colour `7d $` against this weekly budget   | `STATUSLINE_WEEK_BUDGET`   |
-| `alerts`      | `true`   | Toast when a gauge enters the red band                     | —                          |
+Both draw the same line from the same rules: the mod's `hooks/core.ts` is the script's
+logic ported unchanged, and `tools/parity.mts` checks the two produce identical text.
+They read and write the same files under `~/.cache/claude-statusline/`, in the same
+format, so you can run either, or both side by side: they keep each other's terminals
+in sync and add up one weekly figure.
 
 ## Cross-terminal sync
 
 Rate limits are account-level, but each Claude Code session only hears about them in
-its own API responses, so with several terminals open the idle ones would show stale
-5h/7d numbers while another session burns tokens. The mod syncs them pull-based:
+its own API responses — so with several terminals open, the idle ones would show
+stale 5h/7d numbers while another session burns tokens.
 
-- The session that holds the freshest reading publishes it to
+Claude Code has no cross-session push, so both tools sync pull-based:
+
+- The session that receives fresher `rate_limits` publishes them to
   `~/.cache/claude-statusline/shared-rate-limits.json`.
 - Sessions holding staler data render from that file instead, marked with a dim `⇄`.
 - Freshness comes from the data itself — `(resets_at, used_percentage)` per window
@@ -82,9 +73,9 @@ its own API responses, so with several terminals open the idle ones would show s
   No locks; the rate-limit cache keeps no per-session state (the cost ledger below
   does, by design).
 
-Each session re-reads the cache every 10 seconds, and straight away whenever the engine
-reports a change, so idle terminals catch up within seconds and the reset countdowns
-keep moving between turns. The cache is only written when the numbers advanced.
+The statusline re-reads the cache on every `refreshInterval` tick (2 s recommended), the
+mod every 10 s and on every engine measurement, so idle terminals catch up within
+seconds. The cache is only written when the numbers actually advanced.
 Context tokens and model stay per-session — those aren't shared state.
 
 ## Keeping context lean (why the 100k target)
@@ -141,7 +132,7 @@ Practical guidance:
 | Situation                                                   | Target                                                                                                                              |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Normal coding thread, any model                             | Keep the 100k default and hand off by ~100–150k.                                                                                   |
-| Deliberately loading a large corpus (whole codebase, logs)  | Raise `ctxTarget` in `/config` for that stretch, e.g. to 400000, and stay under about half the window on Opus-class models. |
+| Deliberately loading a large corpus (whole codebase, logs)  | Raise it for that stretch (`STATUSLINE_CTX_TARGET=400000 claude`, or the mod's `ctxTarget`), and stay under about half the window on Opus-class models. |
 
 Sources: Anthropic on [context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows)
 and [context engineering](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents);
@@ -154,132 +145,137 @@ and [CodingFleet](https://codingfleet.com/blog/context-window-lie-how-well-ai-mo
 
 ## Works on any subscription
 
-The **5h / 7d percentages come straight from Claude Code**,
+The **5h / 7d percentages come straight from Claude Code** (`rate_limits.used_percentage`),
 which Anthropic computes against *your* plan's limits. So whether you're on **Pro ($20)**
 or **Max ($100 / $200)**, the numbers are correct with **no configuration** — a Pro user
 simply hits 100% sooner than a Max user, because the percentage is relative to their own
 ceiling. Nothing in the primary path assumes a particular tier.
 
-**API-key (pay-as-you-go) users** get no rate-limit readings, so there is no plan gauge
-to draw. The line switches to dollars instead — `💵 sess $1.20 | 7d $35`.
+**API-key (pay-as-you-go) users** never receive `rate_limits`, so there is no plan gauge
+to draw. The line switches to dollars instead — `💵 sess $1.20 | 7d $35`. You don't need a
+key to see it: [preview the layout](statusline/README.md#preview-either-layout-without-switching-plans)
+by feeding the script the payload Claude Code would.
 
 ## Weekly cost
 
-The session's running cost is **Claude Code's own estimate at API list price**, the same
-number `/cost` shows — not a bill. For subscribers it is what the week *would have cost*
+Both tools read the session's running cost from Claude Code. It is **Claude Code's own
+estimate at API list price**, the same number `/usage` shows — not a bill. For subscribers it is what the week *would have cost*
 on the API (and becomes real money once extra usage kicks in); for API-key users it is
 the actual list-price spend. The 7-day figure **counts only sessions on this machine
-where the mod (or the old script) ran**, so on a fresh install it takes a week to fill in.
+where one of the two tools ran**, starting from the moment you installed it, so it takes
+a week to fill in.
 
 - **Subscribers** see it as a dim tail on the 7d gauge: `📅 7d 10% →2d5h $35`. The
   dollars cover **the same window as the percentage beside them** — your plan's own
   seven-day allowance — so both halves of that segment empty together at the reset the
   `→2d5h` counts down to.
-- **API-key users** (a session that has spent something but has no rate-limit readings)
-  see `💵 sess $1.20 | 7d $35` in place of the 5h/7d gauges. Set `weekBudget` to colour
-  the 7d figure against a weekly budget with the usual 60% / 85% thresholds; unset, it
-  stays plain. An API-key session never borrows a subscriber neighbour's synced gauges.
-
-```
-Pro / Max   🧠 ▬▬▬…  62.7k (6%) | 🕐 5h 12% →4h55m | 📅 7d 10% →2d5h $35 ⇄ | 🤖 Opus 4.8 (1M context)
-API key     🧠 ▬▬▬…  62.7k (6%) | 💵 sess $1.20 | 7d $35 | 🤖 Opus 5
-```
+- **API-key users** (payload has `cost` but no `rate_limits`, once the session has
+  spent something) see `💵 sess $1.20 | 7d $35` in place of the 5h/7d gauges. Set a weekly
+  budget (`STATUSLINE_WEEK_BUDGET`, or the mod's `weekBudget`) to colour the 7d figure against a weekly budget with the usual 60% / 85%
+  thresholds; unset, it stays plain. An API-key session never borrows a subscriber
+  neighbour's synced gauges from the shared cache.
 
 How it works: each session keeps its own ledger file under
 `~/.cache/claude-statusline/cost/` (one writer per file, so no lock), adding the
-*delta* of its cumulative total to the current hour's bucket on every refresh; the weekly
+*delta* of its cumulative total to the current hour's bucket on every tick; the weekly
 figure sums the buckets of every session file that fall inside the window. That window
 is whichever one the figure is rendered against: on a subscription, the plan's own
-seven-day window (its reset time minus seven days), so the $ resets when the % does;
-with no plan window to align to it is the trailing 168 hours. Buckets outside the window
-are kept, not dropped: a narrower window must not evict spend the ledger still needs.
-Deltas are clamped to `[0, $100]` per refresh, totals above $10 000 and non-finite values
-are rejected, buckets are re-validated on read, and files untouched for 30 days are
-deleted, so a bad reading or a tampered file is bounded and ages out by itself. Design
-and evidence: ADR-0003
+seven-day window (`rate_limits.seven_day.resets_at` minus seven days), so the $ resets
+when the % does; with no plan window to align to — an API-key session has no allowance
+that resets — it is the trailing 168 hours. Buckets outside the window are kept, not
+dropped: a narrower window must not evict spend the ledger still needs. Deltas are clamped to
+`[0, $100]` per tick, totals above $10 000 and non-finite values are rejected, buckets
+are re-validated on read, and files untouched for 30 days are deleted, so a bad payload
+or a tampered file is bounded and ages out by itself. Design and evidence: ADR-0003
 ([`docs/decisions/0003-weekly-cost-ledger.md`](docs/decisions/0003-weekly-cost-ledger.md))
 and `experiments/cost-ledger/`.
 
-## Tests
-
-```bash
-claude plugin validate aware-mod
-claude plugin test aware-mod
-```
-
-The pure tests cover the logic in `aware-mod/hooks/core.ts`; the engine-level tests
-raise `session.measure` and mount the band on the terminal and desktop surfaces over an
-in-memory file system, so they never touch a real `~/.cache/claude-statusline`.
-
 ## Security
 
-The mod treats everything it renders or reads back as untrusted. The trust boundaries
-and their guards were designed and tested for the Python script (v1.1.1–v1.4.0) and
-ported unchanged to `aware-mod/hooks/core.ts`:
+Both tools run on every render with whatever data Claude Code and your environment
+hand them, so they treat those inputs as untrusted. The guards below shipped in the
+script (v1.1.1–v1.4.0) and are ported unchanged to `aware-mod/hooks/core.ts`. The trust
+boundaries are:
 
-- **Untrusted input (sanitized).**
-  - **F1 — terminal-escape injection (CWE-150).** The model name is passed through a
-    printable allowlist that strips C0 (`\x00–\x1f`), DEL, and C1 (`\x80–\x9f`) bytes
-    and length-bounds the result,
+- **Untrusted stdin JSON (sanitized).** The JSON payload Claude Code pipes in on
+  every render is treated as attacker-controlled. Three fixes shipped in v1.1.1
+  cover it:
+  - **F1 — terminal-escape injection (CWE-150).** `model.display_name` (and the
+    `model.id` fallback) is passed through a printable allowlist that strips C0
+    (`\x00–\x1f`), DEL, and C1 (`\x80–\x9f`) bytes and length-bounds the result,
     so a crafted name can't emit OSC/CSI/clear-screen/clipboard escape sequences
     into your terminal. This is the same escape-injection class as
     [CVE-2025-55754](https://www.cve.org/CVERecord?id=CVE-2025-55754) (Tomcat) and
     [CVE-2025-55193](https://www.cve.org/CVERecord?id=CVE-2025-55193) (Rails).
-  - **F2 — non-object JSON.** Valid-but-non-object JSON read back from a cache file
-    (`null`, arrays, scalars, wrong-typed nested keys) reads as empty instead of crashing.
+  - **F2 — non-object JSON.** Valid-but-non-object payloads (`null`, arrays,
+    scalars) and wrong-typed nested keys are coerced through a type-checked
+    accessor, so a malformed payload degrades gracefully instead of crashing.
   - **F3 — see the shared cache below.**
 - **Local-only shared cache (validated on read and write).** The cross-session
   cache at `~/.cache/claude-statusline/shared-rate-limits.json` is local to your
   machine, but any process running as you could poison it. Every rate-limit value
   is sanitized with the *same* transform on both cache read and pre-publish write
-  (F3): non-finite numbers are dropped, `used_percentage` is clamped to `[0, 100]`,
-  and `resets_at` is bounded to its window's own horizon (6 h for 5h, 8 days for 7d).
-  A poisoned entry can therefore always be overwritten by a legitimate session and never
+  (F3): non-finite numbers (`NaN`/`Infinity`, which `json.loads` otherwise
+  accepts) are dropped, `used_percentage` is clamped to `[0, 100]`, and
+  `resets_at` is bounded to a plausible window (`now … now + ~30d`). A poisoned
+  entry can therefore always be overwritten by a legitimate session and never
   produces a permanent red ⚠️.
-- **Local-only cost ledger (validated on read and write).** The per-session
+- **Local-only cost ledger (validated on read and write, v1.2).** The per-session
   files under `~/.cache/claude-statusline/cost/` are likewise local but writable by
-  any process running as you. The session id is allow-listed to
-  `[A-Za-z0-9_-]{1,64}` before it becomes a filename (anything else gets no ledger,
-  so no file has two writers and nothing lands outside the directory); totals must be
-  finite and within `[0, $10 000]`, one refresh may add at most $100, a total that did not grow adds nothing, only in-window hour keys are
+  any process running as you. The untrusted `session_id` is allow-listed to
+  `[A-Za-z0-9_-]{1,64}` before it becomes a filename (anything else is rendered but
+  never written, so no file has two writers and nothing lands outside the
+  directory); totals must be finite and within `[0, $10 000]`, one tick may add at
+  most $100, a total that did not grow adds nothing, only in-window hour keys are
   read back (at most 168, never future-dated), a file whose in-window sum exceeds
   one session's cap or whose size exceeds 64 KB reads as $0, and files untouched for
-  30 days are deleted. A forged reading or a tampered file can therefore inflate the
+  30 days are deleted. A forged payload or a tampered file can therefore inflate the
   weekly figure only by a bounded amount, and the damage ages out of the 7-day window
-  by itself.
-- **The one command.** `$.fs` has no delete, so the 30-day forget runs
-  `rm -f -- <names>` inside the cost folder, by argv (no shell), and only for bare
+  by itself. The script never runs an external binary: the `ccusage` fallback (and
+  its trusted-`PATH` assumption) was removed in v1.2.0.
+- **The mod's one command.** The mod file API has no delete, so the mod's 30-day forget
+  runs `rm -f -- <names>` inside the cost folder, by argv (no shell), and only for bare
   names matching `[A-Za-z0-9_][A-Za-z0-9_.-]*`: never an option, a path or `..`.
 
-**Install integrity.** The mod installs through Claude Code's plugin system from this
-repo; read the code first, and pin a commit if you need a reviewed version to stay put.
-(The script's `curl | bash` installer, and ADR-0002's hardening plan for it, went away
-with the script.)
+**Install integrity.** Mods run with Claude Code's own access: read `aware-mod/hooks/`
+before installing, and pin a commit if you need a reviewed version to stay put. For the
+statusline, the `curl … | bash` one-liner (Option A) executes a remote
+script unverified over the network — convenient, but you are trusting the fetch.
+Security-conscious users should prefer the **clone + installer** or **manual**
+routes (Options B/C), which let you read the script before running it. When a
+release publishes a SHA-256 for `install.sh`, verify it before piping to a shell
+(e.g. `shasum -a 256 install.sh` and compare against the published digest).
 
 The full analysis and rationale live in
 [`docs/decisions/0001-security-hardening.md`](docs/decisions/0001-security-hardening.md)
 (ADR-0001) and `SECURITY-ANALYSIS.md`.
 
-## Requirements
+## Repository layout
 
-- **Claude Code with mods** (function-hook plugins; built and tested on 2.1.287)
+```
+claudeAware/
+├── statusline/            the Python statusLine script, its tests and CHANGELOG
+├── aware-mod/             the mod: hooks, tests, CHANGELOG
+├── install.sh             the statusline installer (kept at the root for the one-liner)
+├── .claude-plugin/        the plugin marketplace (aware-mod@aware)
+├── tools/parity.mts       checks both tools draw the same line
+├── docs/decisions/        ADRs, shared by both
+└── experiments/           the evidence behind the ADRs
+```
 
-Nothing else: no Python, no Node, no network.
+Each tool is versioned on its own: tags are `statusline-v<version>` (`v1.0.0`–`v1.4.0`
+before the split) and `aware-mod-v<version>`.
 
-## Troubleshooting
+## Development
 
-- **Nothing above the prompt:** check `/plugin` lists `aware-mod` as enabled, then
-  `/reload-plugins`. The band waits for the session's first measurement, and steps
-  aside while a survey holds it. Collapsed it by accident? ctrl+x ctrl+a toggles it.
-  `claude --debug` logs why a hook was skipped or a tree refused.
-- **5h/7d missing, dollars shown instead:** the session has spent something but has no
-  rate-limit readings. That is expected on an API key (pay-as-you-go) login.
-- **7d $ looks low:** it only counts sessions on this machine where the mod (or the old
-  script) ran; it is complete after 7 days. On a subscription it also drops to near
-  zero the moment your seven-day window resets — the dollars track that window, not a
-  trailing week, so they empty when the `7d %` does.
-- **⇄ never appears / sync seems off:** the shared cache lives at
-  `~/.cache/claude-statusline/` — delete it to reset (the `cost/` folder inside it is the
-  weekly ledger; deleting that restarts the 7d figure from $0).
-- **The band and the old script both show:** remove the `statusLine` block from
-  `~/.claude/settings.json` ([Coming from the script](#coming-from-the-script)).
+```bash
+python3 -m unittest discover -s statusline/tests        # statusline: 59 tests
+claude plugin validate aware-mod && claude plugin test aware-mod
+claude plugin validate .                                 # the marketplace
+node --experimental-strip-types tools/parity.mts         # both tools, same line
+```
+
+Every test and the parity check use a throwaway `HOME` or an in-memory file system, so
+none of them touch a real `~/.cache/claude-statusline`. Any change to the shared rules
+(the line, the cache, the ledger) lands in both tools in the same PR, with the parity
+check passing.
