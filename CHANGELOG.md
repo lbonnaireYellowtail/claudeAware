@@ -1,37 +1,6 @@
 # Changelog
 
-Versions follow [semver](https://semver.org). From 2.0.0 they match `version` in
-`aware-mod/.claude-plugin/plugin.json`; up to 1.4.0, `__version__` in `statusline.py`.
-
-## [2.0.0] — 2026-10-02
-
-The project is now **claudeAwareMod**, and ships as a Claude Code mod,
-`aware-mod`. The Python `statusLine` script is gone.
-
-### Added
-- **`aware-mod`**: the same line as a coloured band above the prompt, drawn from the
-  engine's own figures (`$.session.usage()`, `session.measure`) instead of a stdin
-  payload. Output is identical to the script's for the same input (checked side by side
-  before the script was removed).
-- A toast when a gauge first enters the red band (`alerts`, default on).
-- `display: status`: a plain pinned line under the prompt instead of the band.
-- The env vars are now plugin options, set in `/config` (README → Options).
-- The repo is a plugin marketplace: `/plugin marketplace add
-  lbonnaireYellowtail/claudeAwareMod`, then `/plugin install aware-mod@aware`.
-
-### Removed
-- `statusline.py`, `install.sh` and the Python tests. The last script release is tag
-  `v1.4.0`. The install-integrity experiment went with `install.sh`; ADR-0002 is
-  superseded and CS-006 / CS-007 are closed unimplemented.
-
-### Changed
-- Every guard (ADR-0001 F1–F3, the ADR-0003 ledger rules) is ported unchanged to
-  `aware-mod/hooks/core.ts`. The cache folder keeps its name,
-  `~/.cache/claude-statusline/`, and its file formats, so existing sync and weekly cost
-  history carry over.
-- The 30-day ledger forget runs `rm` on allow-listed bare names, since the mod file API
-  has no delete.
-- Idle sessions re-read the shared cache every 10 s; `refreshInterval` no longer applies.
+Versions follow [semver](https://semver.org) and match `__version__` in `statusline.py`.
 
 ## [1.4.0] — 2026-09-14
 

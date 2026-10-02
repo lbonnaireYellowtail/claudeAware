@@ -1,4 +1,4 @@
-# Standards — claudeAwareMod
+# Standards — claude-statusline
 
 ## Rules
 
@@ -6,14 +6,12 @@
 <!-- @/Users/louisbonnaire/.claude/CLAUDE.md                    -->
 
 ## Code style
-- The mod is TypeScript against the generated `claude-code` types: no runtime dependencies.
-- Logic stays pure in `aware-mod/hooks/core.ts`; only `register.tsx` calls `$`.
-- No network calls. The one process run is the allow-listed `rm` of 30-day-old ledgers.
+- Python 3, stdlib-only — no third-party runtime dependencies.
+- Keep the primary path (stdin payload → render) free of subprocess/network calls.
 
 ## Testing
 - Every hardening fix ships with a regression test covering the adversarial input.
-- `claude plugin validate aware-mod` and `claude plugin test aware-mod` pass before a PR.
-- Tests mock `fs.*` beneath the plugin: never touch a real `~/.cache/claude-statusline`.
+- Re-run the 2-session cross-session sync simulation after any change to the sync/cache logic.
 
 ## Git
 - Feature branches only; never commit to main/master/development. Work in an isolated worktree.
