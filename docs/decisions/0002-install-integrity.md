@@ -1,6 +1,8 @@
 # ADR-0002 — Install path integrity (install-source guard + download verification)
 
-- **Status:** Accepted (investigation complete; implementation tracked as CS-006, CS-007)
+- **Status:** Superseded (2026-10-02, v2.0.0): the Python script and `install.sh` were removed;
+  the project ships only as the `aware-mod` plugin, installed through `/plugin`. CS-006 and
+  CS-007 were closed unimplemented. The experiment lives on at tag `v1.4.0`.
 - **Date:** 2026-07-16
 - **Method:** ping-pong (research ↔ experiment). Findings originate in the
   2026-07-16 pre-release security review; each is reproduced and its fix validated

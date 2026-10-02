@@ -1,4 +1,4 @@
-# Tickets — claude-statusline
+# Tickets — claudeAwareMod
 <!-- prefix: CS -->
 
 ## In Progress
@@ -29,8 +29,12 @@ Progress (2026-09-03): implemented in `statusline.py` (`cost_tick` / `weekly_cos
 
 ## Refined
 
+## Won't do
+
 ### [CS-006] Don't trust cwd as the install source in `curl | bash` mode
 **Priority:** medium
+
+**Closed 2026-10-02, v2.0.0:** `install.sh` and `statusline.py` were removed; the project ships only as the `aware-mod` plugin. ADR-0002 superseded.
 
 Refined via ping-pong 2026-07-16 → ADR-0002 (`docs/decisions/0002-install-integrity.md`, D1) + experiment (`experiments/install-integrity/`, validated 0/4 fixed failures). Reference impl: `candidates/fixed.sh`.
 
@@ -46,6 +50,8 @@ From the 2026-07-16 pre-release security review. In piped mode `dirname "${BASH_
 
 ### [CS-007] Verify the downloaded `statusline.py` against a pinned SHA-256 (+ release automation)
 **Priority:** medium
+
+**Closed 2026-10-02, v2.0.0:** `install.sh` and `statusline.py` were removed; the project ships only as the `aware-mod` plugin. ADR-0002 superseded.
 
 Refined via ping-pong 2026-07-16 → ADR-0002 (D2) + experiment (`experiments/install-integrity/`). Decision: pin statusline.py's digest **inside install.sh** (Option A), verify before `chmod`; keep the README manual note (Option C, repointed to statusline.py); reject same-origin `.sha256` fetch (Option B, theatre) and signing (Option D, disproportionate — switch trigger recorded). Reference impl: `candidates/fixed.sh`.
 
