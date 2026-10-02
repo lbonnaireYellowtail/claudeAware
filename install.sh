@@ -5,18 +5,18 @@
 #   curl -fsSL <raw>/install.sh | bash        (standalone; fetches the script)
 set -euo pipefail
 
-RAW_BASE="https://raw.githubusercontent.com/lbonnaireYellowtail/claude-statusline/main"
+RAW_BASE="https://raw.githubusercontent.com/lbonnaireYellowtail/claudeAware/main"
 DEST_DIR="$HOME/.claude/scripts"
 DEST="$DEST_DIR/statusline.py"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 
 mkdir -p "$DEST_DIR"
 
-if [ -f "$SRC_DIR/statusline.py" ]; then
-  cp "$SRC_DIR/statusline.py" "$DEST"
+if [ -f "$SRC_DIR/statusline/statusline.py" ]; then
+  cp "$SRC_DIR/statusline/statusline.py" "$DEST"
 else
   echo "Downloading statusline.py…"
-  curl -fsSL "$RAW_BASE/statusline.py" -o "$DEST"
+  curl -fsSL "$RAW_BASE/statusline/statusline.py" -o "$DEST"
 fi
 chmod +x "$DEST"
 

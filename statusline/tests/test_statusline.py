@@ -21,9 +21,9 @@ import tempfile
 import time
 import unittest
 
-# Repo root is the parent of this tests/ directory; statusline.py lives there.
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-STATUSLINE = os.path.join(REPO_ROOT, "statusline.py")
+# statusline.py lives in the parent of this tests/ directory.
+TOOL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+STATUSLINE = os.path.join(TOOL_DIR, "statusline.py")
 
 
 class StatuslineTestCase(unittest.TestCase):
