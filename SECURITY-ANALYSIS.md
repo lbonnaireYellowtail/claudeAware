@@ -1,7 +1,11 @@
-# Security analysis — claude-statusline
+# Security analysis — claudeAware
 
 **Date:** 2026-07-16
 **Scope:** `statusline.py`, `install.sh`, and the shared-cache sync design in this repo.
+
+> Since the split into two tools the script lives at `statusline/statusline.py`, and its
+> guards are ported unchanged to `aware-mod/hooks/core.ts`, so F1–F3 apply to both. Line
+> numbers refer to tag `v1.4.0`.
 **Method:** adversarial stdin payloads (control chars, type confusion, non-object JSON,
 deeply nested JSON), cache-poisoning simulation in an isolated `HOME`, and a static
 review of dependencies and the install flow.
