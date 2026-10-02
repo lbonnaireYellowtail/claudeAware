@@ -1,0 +1,65 @@
+{
+  "name": "aware-mod",
+  "version": "1.0.0",
+  "description": "Usage awareness above the prompt: context bar, live 5h/7d plan limits synced across terminals, and weekly spend",
+  "author": {
+    "name": "lbonnaireYellowtail"
+  },
+  "repository": "https://github.com/lbonnaireYellowtail/claudeAware",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "display": {
+      "type": "string",
+      "title": "Where to draw",
+      "description": "band: a coloured row above the prompt. status: a plain pinned status line under it.",
+      "options": [
+        "band",
+        "status"
+      ],
+      "default": "band"
+    },
+    "ctxTarget": {
+      "type": "number",
+      "title": "Context target (tokens)",
+      "description": "Soft context target the bar fills toward",
+      "default": 100000
+    },
+    "ctxBar": {
+      "type": "boolean",
+      "title": "Context bar",
+      "description": "Draw the context as a bar; off shows the compact 'ctx 62.7k' label",
+      "default": true
+    },
+    "ctxBarCells": {
+      "type": "number",
+      "title": "Context bar width (cells)",
+      "description": "1 to 60",
+      "default": 15
+    },
+    "cautionPct": {
+      "type": "number",
+      "title": "Caution at (%)",
+      "description": "Yellow at or above this percentage",
+      "default": 60
+    },
+    "warnPct": {
+      "type": "number",
+      "title": "Warn at (%)",
+      "description": "Red and a warning at or above this percentage",
+      "default": 85
+    },
+    "weekBudget": {
+      "type": "number",
+      "title": "Weekly budget ($)",
+      "description": "API-key users: colour the 7d dollars against this; 0 is off",
+      "default": 0
+    },
+    "alerts": {
+      "type": "boolean",
+      "title": "Threshold toasts",
+      "description": "Toast once when a gauge enters the warn band",
+      "default": true
+    }
+  }
+}

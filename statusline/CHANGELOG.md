@@ -1,6 +1,15 @@
 # Changelog
 
 Versions follow [semver](https://semver.org) and match `__version__` in `statusline.py`.
+Releases up to 1.4.0 are tagged `v<version>`; later ones `statusline-v<version>`.
+
+## [Unreleased]
+
+### Changed
+- The project is now **claudeAware**, a repo holding two tools: this statusline and
+  [`aware-mod`](../aware-mod/), the same line as a Claude Code mod. The script moved to
+  `statusline/`; `install.sh` stays at the repo root, so the one-liner keeps working
+  (GitHub redirects the old `claude-statusline` URLs). `statusline.py` is unchanged.
 
 ## [1.4.0] — 2026-09-14
 
