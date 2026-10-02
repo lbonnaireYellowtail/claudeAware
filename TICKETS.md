@@ -1,4 +1,4 @@
-# Tickets — claude-statusline
+# Tickets — claudeAwareStatusline
 <!-- prefix: CS -->
 
 ## In Progress

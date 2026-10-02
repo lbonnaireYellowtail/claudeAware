@@ -2,6 +2,18 @@
 
 Versions follow [semver](https://semver.org) and match `__version__` in `statusline.py`.
 
+## [Unreleased]
+
+### Changed
+- The project is now **claudeAwareStatusline** (formerly `claude-statusline`): the
+  GitHub repo, the README title and the installer's download URL. GitHub redirects the
+  old URLs, so existing installs and links keep working. The cache folder keeps its
+  name, `~/.cache/claude-statusline/`. `statusline.py` itself is unchanged.
+
+### Added
+- README pointer to [claudeAwareMod](https://github.com/lbonnaireYellowtail/claudeAwareMod),
+  the same line as a Claude Code mod, which shares this script's cache and ledger.
+
 ## [1.4.0] — 2026-09-14
 
 ### Fixed

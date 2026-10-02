@@ -1,4 +1,4 @@
-# Standards — claude-statusline
+# Standards — claudeAwareStatusline
 
 ## Rules
 

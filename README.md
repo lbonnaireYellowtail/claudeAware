@@ -1,6 +1,6 @@
-# Claude Code live statusline
+# claudeAwareStatusline
 
-A one-line statusline for Claude Code that shows, in real time:
+A one-line statusline for Claude Code (formerly `claude-statusline`) that shows, in real time:
 
 ```
 🧠 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬  62.7k (6%) | 🕐 5h 12% →4h55m | 📅 7d 10% →2d5h $35 ⇄ | 🤖 Opus 4.8 (1M context)
@@ -314,19 +314,33 @@ The full analysis and rationale live in
 Nothing else: no Node, no `ccusage`, no network. On a Claude Code build that sends
 neither `rate_limits` nor `cost`, the line shows just the context and model segments.
 
+## Prefer a mod? claudeAwareMod
+
+[claudeAwareMod](https://github.com/lbonnaireYellowtail/claudeAwareMod) is the same line
+as a [Claude Code mod](https://claude.dev/blog/getting-started-with-claude-code-mods/): a
+coloured band above the prompt, drawn from Claude Code's own figures, with no Python and
+no `statusLine` setting, plus a toast when a gauge enters the red band. It reads and
+writes this script's files under `~/.cache/claude-statusline/`, in the same format, so
+the two can run side by side and share one cross-terminal cache and one weekly ledger.
+
+```
+/plugin marketplace add lbonnaireYellowtail/claudeAwareMod
+/plugin install aware-mod@aware
+```
+
 ## Install
 
 **Option A — one-liner (no clone needed):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/lbonnaireYellowtail/claude-statusline/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/lbonnaireYellowtail/claudeAwareStatusline/main/install.sh | bash
 ```
 
 **Option B — clone + installer:**
 
 ```bash
-git clone https://github.com/lbonnaireYellowtail/claude-statusline.git
-cd claude-statusline && ./install.sh
+git clone https://github.com/lbonnaireYellowtail/claudeAwareStatusline.git
+cd claudeAwareStatusline && ./install.sh
 ```
 
 Both print the `settings.json` snippet to paste in (shown below).

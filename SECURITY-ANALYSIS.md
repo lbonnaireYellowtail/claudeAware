@@ -1,4 +1,4 @@
-# Security analysis — claude-statusline
+# Security analysis — claudeAwareStatusline
 
 **Date:** 2026-07-16
 **Scope:** `statusline.py`, `install.sh`, and the shared-cache sync design in this repo.
