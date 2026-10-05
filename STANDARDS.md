@@ -10,15 +10,18 @@
   primary path (stdin payload → render) free of subprocess/network calls.
 - aware-mod: TypeScript against the generated `claude-code` types, no runtime
   dependencies. Logic stays pure in `hooks/core.ts`; only `register.tsx` calls `$`. No
-  network calls; the one process run is the allow-listed `rm` of 30-day-old ledgers.
+  network calls; the one process run is `/bin/rm` (absolute path) of allow-listed
+  30-day-old ledgers.
 - A change to the shared rules (the line, the cache, the ledger) lands in both tools in
-  the same PR.
+  the same PR. A change to a cache file's format also updates `docs/cache-format.md`.
 
 ## Testing
 - Every hardening fix ships with a regression test covering the adversarial input.
 - Re-run the 2-session cross-session sync simulation after any change to the sync/cache logic.
-- `python3 -m unittest discover -s statusline/tests`, `claude plugin test aware-mod` and
+- `python3 -m unittest discover -s statusline/tests`, `claude plugin test aware-mod`,
+  `node --experimental-strip-types tools/core-tests/run.mjs` and
   `node --experimental-strip-types tools/parity.mts` all pass before a PR.
+  They run locally; there is no CI yet.
 - Tests use a throwaway `HOME` or an in-memory fs: never touch a real `~/.cache/claude-statusline`.
 
 ## Git
