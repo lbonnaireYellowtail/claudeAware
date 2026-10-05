@@ -1,7 +1,7 @@
 # ADR-0003 — Weekly dollar cost in the status line, and a layout for API-key users
 
 - **Status:** Proposed (investigation + experiment complete; implementation tracked as CS-008, CS-009). Direction taken on the user's "test out the experiment" go-ahead of 2026-09-03; the three layout/scope choices below are recorded as assumptions and are cheap to reverse before CS-008 starts.
-- **Date:** 2026-09-03 (amended 2026-09-14 — see D6, which supersedes the "rolling" window of D2)
+- **Date:** 2026-09-03 (amended 2026-09-14 — see D6, which supersedes the "rolling" window of D2; amended 2026-10-02 — the file format is now specified in [`docs/cache-format.md`](../cache-format.md), and a bucket-size change is a format change, see D2)
 - **Method:** ping-pong (research ↔ experiment). Every claim about Claude Code behaviour below was checked against the official docs or observed on Claude Code 2.1.259; every design claim is validated in `experiments/cost-ledger/` (see `results/report.md`).
 
 ## Context
@@ -52,11 +52,11 @@ Each tick computes `delta = clamp(total − last_total_for_session, 0, CAP_DELTA
 
 Rejected: **naive totals** (keep each session's latest total; sum the sessions seen in the last week), which is the literal form of the original proposal. It fails 6 of 13 scenarios: it cannot place spend in time (a 10-day session over-counts by 43 %, an idle session never leaves the window, a resume that resets the counter *loses* money). It is the right model only when every session starts and ends inside the window. It does have one genuine advantage the buckets lack, recorded honestly: "latest total wins" self-heals from a single poisoned tick, whereas buckets integrate the poison until it ages out; D2's caps are what make that acceptable.
 
-Resolution: one bucket. Up to one hour of spend can sit just outside the window (measured: −$0.83 on a steady $168 week). *Switch to 15-minute buckets* if anyone cares; the file format already supports it (bucket key = `floor(now / BUCKET)`).
+Resolution: one bucket. Up to one hour of spend can sit just outside the window (measured: −$0.83 on a steady $168 week). *Switch to 15-minute buckets* if anyone cares, but as a format change, not a free one: every released reader (either tool) takes a bucket key as `floor(epoch / 3600)`, so 15-minute keys would look like hours far in the future and be dropped, and each tool would silently stop counting the other's spend. It needs a new field or file and a `v` bump ([`docs/cache-format.md`](../cache-format.md)). *(Corrected 2026-10-02: this used to say the format already supported it.)*
 
 ### D3 — Storage: one ledger file per session, no lock
 
-`~/.cache/claude-statusline/cost/<session_id>.json`, holding that session's `last_total`, `seen`, and its buckets. Only the session's own statusline process ever writes its file, so no lock is needed and the existing atomic `os.replace` is sufficient. Readers sum every file in the directory whose mtime is inside the window; older files are skipped on a `stat()` without being parsed, and deleted once older than the 30-day session memory. `session_id` is allow-listed to `[A-Za-z0-9_-]{1,64}` before it becomes a filename (an untrusted payload field must not be able to write outside the directory).
+`~/.cache/claude-statusline/cost/<session_id>.json`, holding that session's `last_total`, `seen`, and its buckets (fields, units and guards: [`docs/cache-format.md`](../cache-format.md)). Only the session's own statusline process ever writes its file, so no lock is needed and the existing atomic `os.replace` is sufficient. Readers sum every file in the directory whose mtime is inside the window; older files are skipped on a `stat()` without being parsed, and deleted once older than the 30-day session memory. `session_id` is allow-listed to `[A-Za-z0-9_-]{1,64}` before it becomes a filename (an untrusted payload field must not be able to write outside the directory).
 
 Rejected:
 
@@ -133,5 +133,5 @@ Tooling: `experiments/cost-ledger/live/capture.py` (temporary statusline wrapper
 - Claude Code exposes an account-level or weekly spend, or a billing-authoritative cost → replace the ledger with it; keep the display.
 - The payload gains an explicit auth-mode field → use it instead of the `rate_limits` presence heuristic.
 - Live session files regularly exceed a few hundred (weekly read above ~15 ms) → move to single-file/flock, or add a compaction file.
-- Users want finer than one-hour edge resolution → 15-minute buckets, same format.
+- Users want finer than one-hour edge resolution → 15-minute buckets, as a format change (a new field or file and a `v` bump, see D2).
 - A supported Claude Code version sends neither `cost` nor `rate_limits` → keep a fallback (not necessarily ccusage).

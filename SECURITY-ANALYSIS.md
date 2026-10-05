@@ -1,11 +1,15 @@
-# Security analysis — claudeAware
+# Security analysis — claude-statusline v1.1.0 (historical appendix)
+
+> **Historical record, pinned to tag `v1.1.0`.** This is the 2026-07-16 review of
+> `statusline.py` as it was then; its line numbers, its dependency list (`subprocess`,
+> `shutil`, `ccusage`) and its scope all describe v1.1.0. It is kept as the origin of
+> F1–F3, not as a description of the current code: it predates the cost ledger
+> (ADR-0003) and aware-mod entirely. For the current trust boundaries see the README's
+> Security section and ADR-0001 (whose accepted-risk list is kept up to date); for the
+> cache files, `docs/cache-format.md`.
 
 **Date:** 2026-07-16
-**Scope:** `statusline.py`, `install.sh`, and the shared-cache sync design in this repo.
-
-> Since the split into two tools the script lives at `statusline/statusline.py`, and its
-> guards are ported unchanged to `aware-mod/hooks/core.ts`, so F1–F3 apply to both. Line
-> numbers refer to tag `v1.4.0`.
+**Scope:** `statusline.py`, `install.sh`, and the shared-cache sync design, at v1.1.0.
 **Method:** adversarial stdin payloads (control chars, type confusion, non-object JSON,
 deeply nested JSON), cache-poisoning simulation in an isolated `HOME`, and a static
 review of dependencies and the install flow.

@@ -52,10 +52,11 @@ then add the `statusLine` block it prints to `~/.claude/settings.json`
 ```
 
 Both draw the same line from the same rules: the mod's `hooks/core.ts` is the script's
-logic ported unchanged, and `tools/parity.mts` checks the two produce identical text.
-They read and write the same files under `~/.cache/claude-statusline/`, in the same
-format, so you can run either, or both side by side: they keep each other's terminals
-in sync and add up one weekly figure.
+logic ported rule for rule, and `tools/parity.mts` checks the two draw the same line
+(colours and bar fill included) and leave the same files behind. They read and write the
+same files under `~/.cache/claude-statusline/`, in one format
+([`docs/cache-format.md`](docs/cache-format.md)), so you can run either, or both side by
+side: they keep each other's terminals in sync and add up one weekly figure.
 
 ## Cross-terminal sync
 
@@ -216,10 +217,12 @@ boundaries are:
   machine, but any process running as you could poison it. Every rate-limit value
   is sanitized with the *same* transform on both cache read and pre-publish write
   (F3): non-finite numbers (`NaN`/`Infinity`, which `json.loads` otherwise
-  accepts) are dropped, `used_percentage` is clamped to `[0, 100]`, and
-  `resets_at` is bounded to a plausible window (`now … now + ~30d`). A poisoned
-  entry can therefore always be overwritten by a legitimate session and never
-  produces a permanent red ⚠️.
+  accepts, and integers too large for a float) are dropped, `used_percentage` is
+  clamped to `[0, 100]`, and `resets_at` is bounded to each window's own horizon
+  (`now … now + 6 h` for the 5-hour window, `now + 8 d` for the 7-day one). A
+  poisoned entry can therefore always be overwritten by a legitimate session and
+  never produces a permanent red ⚠️. A reset that has already passed reads as a
+  rolled-over window (0 %), so a stale reading cannot keep an alarm up either.
 - **Local-only cost ledger (validated on read and write, v1.2).** The per-session
   files under `~/.cache/claude-statusline/cost/` are likewise local but writable by
   any process running as you. The untrusted `session_id` is allow-listed to
@@ -229,13 +232,19 @@ boundaries are:
   most $100, a total that did not grow adds nothing, only in-window hour keys are
   read back (at most 168, never future-dated), a file whose in-window sum exceeds
   one session's cap or whose size exceeds 64 KB reads as $0, and files untouched for
-  30 days are deleted. A forged payload or a tampered file can therefore inflate the
+  30 days are deleted: only regular files named like a ledger (or the script's temp
+  file for one), never anything else in the folder, never a symlink, and nothing at
+  all when `cost/` itself is a symlink. A forged payload or a tampered file can therefore inflate the
   weekly figure only by a bounded amount, and the damage ages out of the 7-day window
   by itself. The script never runs an external binary: the `ccusage` fallback (and
   its trusted-`PATH` assumption) was removed in v1.2.0.
 - **The mod's one command.** The mod file API has no delete, so the mod's 30-day forget
-  runs `rm -f -- <names>` inside the cost folder, by argv (no shell), and only for bare
-  names matching `[A-Za-z0-9_][A-Za-z0-9_.-]*`: never an option, a path or `..`.
+  runs `/bin/rm -f -- <names>` inside the cost folder: by argv (no shell) and by
+  absolute path (no `PATH` lookup), skipped on Windows. The names are those of any
+  session's ledger files there, the script's included, untouched for 30 days and
+  matching `<session id>.json` or `<session id>.json.<pid>.tmp`: never an option, a
+  path, `..`, a symlink or a file that is not a ledger. The mod writes its files in place
+  (the mod file API has no rename), never through a symlink.
 
 **Install integrity.** Mods run with Claude Code's own access: read `aware-mod/hooks/`
 before installing, and pin a commit if you need a reviewed version to stay put. For the
@@ -246,9 +255,10 @@ routes (Options B/C), which let you read the script before running it. When a
 release publishes a SHA-256 for `install.sh`, verify it before piping to a shell
 (e.g. `shasum -a 256 install.sh` and compare against the published digest).
 
-The full analysis and rationale live in
+The rationale and the accepted risks live in
 [`docs/decisions/0001-security-hardening.md`](docs/decisions/0001-security-hardening.md)
-(ADR-0001) and `SECURITY-ANALYSIS.md`.
+(ADR-0001); `SECURITY-ANALYSIS.md` is the original v1.1.0 review, kept as a historical
+appendix.
 
 ## Repository layout
 
@@ -258,7 +268,9 @@ claudeAware/
 ├── aware-mod/             the mod: hooks, tests, CHANGELOG
 ├── install.sh             the statusline installer (kept at the root for the one-liner)
 ├── .claude-plugin/        the plugin marketplace (aware-mod@aware)
-├── tools/parity.mts       checks both tools draw the same line
+├── tools/parity.mts       checks both tools draw the same line and leave the same files
+├── tools/core-tests/      runs aware-mod's pure tests on plain Node
+├── docs/cache-format.md   the two shared cache files, specified
 ├── docs/decisions/        ADRs, shared by both
 └── experiments/           the evidence behind the ADRs
 ```
@@ -269,10 +281,11 @@ before the split) and `aware-mod-v<version>`.
 ## Development
 
 ```bash
-python3 -m unittest discover -s statusline/tests        # statusline: 59 tests
-claude plugin validate aware-mod && claude plugin test aware-mod
+python3 -m unittest discover -s statusline/tests        # statusline: 80 tests
+node --experimental-strip-types tools/core-tests/run.mjs # aware-mod's pure tests, plain Node
+claude plugin validate aware-mod && claude plugin test aware-mod   # + the engine-level tests
 claude plugin validate .                                 # the marketplace
-node --experimental-strip-types tools/parity.mts         # both tools, same line
+node --experimental-strip-types tools/parity.mts         # both tools, same line, same files
 ```
 
 Every test and the parity check use a throwaway `HOME` or an in-memory file system, so

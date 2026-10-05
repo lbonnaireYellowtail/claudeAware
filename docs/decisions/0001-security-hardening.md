@@ -149,6 +149,21 @@ window.
 - `experiments/security-hardening/adapters.py` holds the reference behaviour
   (`fixed_display`, `_dict_get`/`fixed_extract`, `sanitize_rl`) the implementations
   should match; `run.py` doubles as a regression guard (non-zero exit on failure).
-- Not addressed (accepted risk, documented only): PATH-hijack of `ccusage` and the
-  unverified `curl | bash` install — both require the attacker to already control
-  the user's environment or the release channel.
+- Not addressed (accepted risk, documented only). As first recorded: PATH-hijack of
+  `ccusage` and the unverified `curl | bash` install — both require the attacker to
+  already control the user's environment or the release channel. *Amended
+  2026-10-02*, the list as it stands:
+  - ~~PATH-hijack of `ccusage`~~: gone. The fallback was removed in v1.2.0 (ADR-0003
+    D5); the script runs no external binary.
+  - The unverified `curl | bash` install: superseded by ADR-0002 (install integrity),
+    which tracks it now.
+  - aware-mod's one process run. The mod file API has no delete, so its 30-day ledger
+    sweep runs `/bin/rm -f -- <names>` in the cost folder: an absolute path (no `PATH`
+    lookup, so not the `ccusage` boundary again), argv with no shell, and only regular
+    files whose names a ledger can have, never through a symlink; skipped on Windows.
+    What stays trusted is the system's own `/bin/rm`.
+  - aware-mod's in-place writes. The mod file API has no rename, so the mod writes its
+    cache files in place: a reader can catch a half-written file (it reads as garbage
+    and is ignored), and a write would follow a symlink, so the mod checks for one
+    first and never writes through it. The window between that check and the write is
+    accepted: exploiting it needs a process already running as the user.
