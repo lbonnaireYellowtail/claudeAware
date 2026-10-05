@@ -1,5 +1,8 @@
-/** One rate-limit window in the shared-cache spelling: epoch SECONDS. */
-export type RlWindow = { used_percentage?: number; resets_at?: number }
+/**
+ * One rate-limit window in the shared-cache spelling: epoch SECONDS.
+ * `rolled_at`: the reset a rolled-over window passed (docs/cache-format.md).
+ */
+export type RlWindow = { used_percentage?: number; resets_at?: number; rolled_at?: number }
 export type RateLimits = { five_hour?: RlWindow; seven_day?: RlWindow }
 
 /** What one refresh measured; the line is drawn from it at render time. */

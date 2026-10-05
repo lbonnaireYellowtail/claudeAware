@@ -25,7 +25,9 @@ Or from a clone, for one session: `claude --plugin-dir ./aware-mod`.
 Mods run with Claude Code's own access, so read [`aware-mod/hooks/`](hooks)
 before installing, as you would any package. It reads and writes only
 `~/.cache/claude-statusline/`, makes no network calls, and runs one command:
-`rm` on its own 30-day-old ledger files.
+`/bin/rm` on the ledger files in `cost/` that nobody has touched for 30 days (any
+session's, the statusline's included; only files named like a ledger, never a symlink,
+and not at all on Windows).
 
 ### Alongside the statusline
 
@@ -56,12 +58,15 @@ Set in `/config`, or under `pluginConfigs` in `settings.json`:
 ```bash
 claude plugin validate aware-mod
 claude plugin test aware-mod
+node --experimental-strip-types tools/core-tests/run.mjs   # from the repo root: the pure tests on plain Node
 ```
 
-The pure tests cover the logic in `hooks/core.ts`; the engine-level tests raise
+The pure tests cover the logic in `hooks/core.ts`, and also run on plain Node (Node
+22.6+), so they run where mods can't; the engine-level tests raise
 `session.measure` and mount the band on the terminal and desktop surfaces over an
 in-memory file system, so they never touch a real `~/.cache/claude-statusline`.
-`tools/parity.mts` at the repo root checks the mod and the statusline draw the same line.
+`tools/parity.mts` at the repo root checks the mod and the statusline draw the same line
+and leave the same files ([`docs/cache-format.md`](../docs/cache-format.md)).
 
 ## Requirements
 

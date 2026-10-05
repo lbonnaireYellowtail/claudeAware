@@ -43,6 +43,13 @@ Freshness is derived from the data itself — (resets_at, used_percentage) never
 decreases within an account — so concurrent writers can't regress the cache.
 Pair this with statusLine.refreshInterval in settings.json so idle sessions
 poll the cache.
+
+Both cache files are shared with aware-mod, which reads and writes them too;
+their format (fields, units, guards, the "v" field) is specified in
+docs/cache-format.md. A change to it lands in both tools at once.
+
+Importing this file has no side effects (no stdin read, no output): the line is
+drawn by main(), which runs only when it is executed as a script.
 """
 __version__ = "1.4.0"
 
@@ -51,10 +58,8 @@ import os
 import re
 import json
 import math
+import stat
 import time
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
 
 
 def _env(name, default):
@@ -124,28 +129,50 @@ def _dict_get(d, key):
 
 
 def _finite(v):
-    """A real number (not bool) that is neither NaN nor Infinity."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+    """A real number (not bool) that is neither NaN nor Infinity.
+
+    An int too large for a float (10**400) counts as infinite rather than
+    raising OverflowError out of math.isfinite.
+    """
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return False
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
 
 
-payload = sys.stdin.read()
-try:
-    data = json.loads(payload)
-except Exception:
-    data = {}
-# Valid JSON need not be an object: null, [1,2,3], "hi", 42 all parse fine.
-if not isinstance(data, dict):
-    data = {}
+def parse_payload(text):
+    """The stdin payload as a dict; anything else reads as {}.
+
+    parse_int=float: every JSON integer becomes a float, so a 400-digit one
+    reads as Infinity (which _finite rejects) instead of an int that
+    math.isfinite and float() raise OverflowError on.
+    """
+    try:
+        data = json.loads(text, parse_int=float)
+    except Exception:
+        return {}
+    # Valid JSON need not be an object: null, [1,2,3], "hi", 42 all parse fine.
+    return data if isinstance(data, dict) else {}
+
 
 CACHE_DIR = os.path.expanduser("~/.cache/claude-statusline")
 SHARED_RL = os.path.join(CACHE_DIR, "shared-rate-limits.json")
 COST_DIR = os.path.join(CACHE_DIR, "cost")
+# The "v" written into both cache files (docs/cache-format.md). Readers ignore
+# it; a file without one is format 1 too (written before the field existed).
+CACHE_FORMAT = 1
 
 
 def load_json(path):
     try:
         with open(path) as f:
-            return json.load(f)
+            # parse_int=float, as for stdin: any process running as the user
+            # can write these files, and a huge integer must not crash every
+            # tick (in the shared cache it would also block the publish that
+            # could overwrite it).
+            return json.load(f, parse_int=float)
     except Exception:
         return None
 
@@ -168,14 +195,21 @@ def rl_freshness(rl):
     over, resets_at jumps forward. So (resets_at, pct) per window sorts any two
     snapshots of the same account by recency, regardless of which session saw
     them or when.
+
+    A window that has rolled over (sanitize_rl) carries the reset it rolled at
+    as `rolled_at` instead of `resets_at`. That instant is in the past, so it
+    sorts below any live reading and above a window with no reset at all.
     """
     def num(v):
-        return float(v) if isinstance(v, (int, float)) else -1.0
+        return float(v) if _finite(v) else -1.0
 
     key = []
     for w in ("five_hour", "seven_day"):
         win = (rl or {}).get(w) or {}
-        key += [num(win.get("resets_at")), num(win.get("used_percentage"))]
+        reset = win.get("resets_at")
+        if not _finite(reset):
+            reset = win.get("rolled_at")
+        key += [num(reset), num(win.get("used_percentage"))]
     return key
 
 
@@ -188,14 +222,31 @@ def rl_freshness(rl):
 _RESET_HORIZON = {"five_hour": 6 * 3600, "seven_day": 8 * 24 * 3600}
 
 
+def _whole_seconds(v):
+    """A finite epoch rounded to whole seconds (half to even), else None."""
+    return float(round(v)) if _finite(v) else None
+
+
 def sanitize_rl(rl, now):
     """Return a rate_limits blob with only trustworthy values (CS-003).
 
-    For each of five_hour / seven_day: drop non-finite numbers (rejects NaN and
-    Infinity, which json.loads happily accepts), clamp used_percentage to
-    [0,100], and keep resets_at only if it falls within that window's own
-    plausible horizon (now <= resets_at <= now + horizon). Any field failing
-    its check is dropped.
+    For each of five_hour / seven_day: drop non-finite numbers and bools
+    (rejects NaN and Infinity, which json.loads happily accepts), clamp
+    used_percentage to [0,100], and keep resets_at only if it falls within
+    that window's own plausible horizon (now <= resets_at <= now + horizon).
+    Any field failing its check is dropped.
+
+    A resets_at that has already passed means the window rolled over since
+    the reading was taken: its % belongs to a window that no longer exists,
+    so it reads as 0 with no countdown rather than as a stale alarm. When the
+    reset is recent (now - horizon <= resets_at < now) it is kept as
+    `rolled_at`: it is when the current window started, which is what the
+    seven-day $ counts from (cost_window_start), and it ranks the reading in
+    the freshness key.
+
+    Readings are normalised to one precision, used_percentage to 1 decimal
+    and both instants to whole seconds, so the same reading taken by this
+    script and by aware-mod compares equal in the freshness key.
 
     Applied identically on BOTH sides of the sync — the cache contents on read
     and the live payload before publish — so poison can neither be trusted nor
@@ -207,14 +258,24 @@ def sanitize_rl(rl, now):
         win = rl.get(w) if isinstance(rl, dict) else None
         if not isinstance(win, dict):
             continue
+        horizon = _RESET_HORIZON[w]
         clean = {}
         pct = win.get("used_percentage")
-        if isinstance(pct, (int, float)) and math.isfinite(pct):
-            clean["used_percentage"] = max(0.0, min(100.0, float(pct)))
-        reset = win.get("resets_at")
-        if (isinstance(reset, (int, float)) and math.isfinite(reset)
-                and now <= reset <= now + _RESET_HORIZON[w]):
-            clean["resets_at"] = float(reset)
+        if _finite(pct):
+            clean["used_percentage"] = round(max(0.0, min(100.0, float(pct))), 1)
+        reset = _whole_seconds(win.get("resets_at"))
+        rolled = _whole_seconds(win.get("rolled_at"))
+        if reset is not None and reset >= now:
+            if reset <= now + horizon:
+                clean["resets_at"] = reset
+            # else: implausibly far out, i.e. poison; dropped, the % stands
+        else:
+            if reset is not None:
+                rolled = reset  # this reading's own window has ended
+            if rolled is not None and rolled < now:
+                clean = {"used_percentage": 0.0}
+                if rolled >= now - horizon:
+                    clean["rolled_at"] = rolled
         if clean:
             out[w] = clean
     return out
@@ -233,7 +294,7 @@ def sync_rate_limits(rl):
     shared_rl = sanitize_rl(shared.get("rate_limits"), now)
     mine, theirs = rl_freshness(rl), rl_freshness(shared_rl)
     if mine > theirs:
-        atomic_write(SHARED_RL, {"rate_limits": rl})
+        atomic_write(SHARED_RL, {"v": CACHE_FORMAT, "rate_limits": rl})
         return rl, False
     if theirs > mine:
         return shared_rl, True
@@ -262,6 +323,19 @@ _SID_OK = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # Hour keys are floor(epoch / 3600): ASCII digits only. str.isdigit() would also
 # accept '²' / '③', which int() then rejects with a ValueError.
 _HOUR_KEY = re.compile(r"[0-9]{1,12}")
+# What the 30-day sweep may delete: a ledger's own name (the session-id
+# allow-list + .json) or atomic_write's orphaned temp file for one
+# (<name>.json.<pid>.tmp). Anything else in cost/ is not ours and is left alone.
+_LEDGER_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json(\.[0-9]+\.tmp)?")
+
+
+def cost_dir_linked():
+    """True when cost/ is a symlink: the ledger is then not read, written or swept.
+
+    The sweep deletes old files, and through a link it would delete them in
+    whatever folder the link points at (SEC-1).
+    """
+    return os.path.islink(COST_DIR)
 
 
 def _valid_total(v):
@@ -318,10 +392,11 @@ def cost_tick(sid, total, now):
 
     An invalid session_id gets no ledger at all: funnelling every odd id into
     one shared file would give that file many writers, which is the exact
-    condition the per-session layout exists to avoid.
+    condition the per-session layout exists to avoid. Nor does a symlinked
+    cost/ folder (cost_dir_linked).
     """
     path = ledger_path(sid)
-    if path is None:
+    if path is None or cost_dir_linked():
         return
     ledger = sanitize_ledger(load_json(path), now)
     last = ledger["last_total"]
@@ -338,7 +413,7 @@ def cost_tick(sid, total, now):
     buckets = ledger["buckets"]
     h = str(int(now // _HOUR))
     buckets[h] = buckets.get(h, 0.0) + delta
-    atomic_write(path, {"last_total": total, "seen": now, "buckets": buckets})
+    atomic_write(path, {"v": CACHE_FORMAT, "last_total": total, "seen": now, "buckets": buckets})
 
 
 def cost_window_start(rl, now):
@@ -351,6 +426,10 @@ def cost_window_start(rl, now):
     dropped at the reset while the $ carried spend from before it (82 % of the
     figure, in the report this fixes). Align to the window the gauge is about.
 
+    A window that has rolled over since the reading (sanitize_rl's
+    `rolled_at`) started its successor at that old reset, so the figure counts
+    from there rather than falling back to the trailing week.
+
     Without a plan window there is nothing to align to -- an API-key session
     has no allowance that resets -- so the figure stays the trailing 168 h.
     `rl` is the sanitized blob we actually render, so a plan start can never
@@ -358,10 +437,14 @@ def cost_window_start(rl, now):
     future); the clamp covers a caller that has not sanitized.
     """
     rolling = now - _WEEK_HOURS * _HOUR
-    reset = ((rl or {}).get("seven_day") or {}).get("resets_at")
-    if not _finite(reset):
-        return rolling
-    return max(rolling, min(reset - _WEEK_HOURS * _HOUR, now))
+    win = (rl or {}).get("seven_day") or {}
+    reset = win.get("resets_at")
+    if _finite(reset):
+        return max(rolling, min(reset - _WEEK_HOURS * _HOUR, now))
+    rolled = win.get("rolled_at")
+    if _finite(rolled):
+        return max(rolling, min(rolled, now))
+    return rolling
 
 
 def weekly_cost(now, start=None):
@@ -374,6 +457,11 @@ def weekly_cost(now, start=None):
     which is also what forgets a session's baseline. Oversized files are junk
     by definition and are skipped unparsed.
 
+    Only regular files are looked at (lstat: a symlink is neither followed nor
+    deleted), only names a ledger or its temp file can have are deleted
+    (_LEDGER_FILE), and a symlinked cost/ folder is not touched at all
+    (cost_dir_linked), so the sweep never deletes outside its own folder.
+
     File lifecycle (the stale skip, the 30-day forget) stays keyed to the
     trailing 168 h whatever `start` is: it governs what may still be READ, and
     a narrower display window must not evict a bucket the next reset brings
@@ -382,6 +470,8 @@ def weekly_cost(now, start=None):
     over-reporting a fraction of one hour is the safe direction for a figure
     people watch against a budget.
     """
+    if cost_dir_linked():
+        return 0.0
     try:
         names = os.listdir(COST_DIR)
     except OSError:
@@ -393,14 +483,17 @@ def weekly_cost(now, start=None):
     for n in names:
         path = os.path.join(COST_DIR, n)
         try:
-            st = os.stat(path)
+            st = os.lstat(path)
         except OSError:
             continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
         if st.st_mtime < forget:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+            if _LEDGER_FILE.fullmatch(n):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
             continue
         if not n.endswith(".json") or st.st_mtime < stale or st.st_size > COST_MAX_FILE:
             continue
@@ -469,93 +562,113 @@ def fmt_reset(epoch):
     return f" {DIM}→{h}h{m:02d}m{RESET}" if h else f" {DIM}→{m}m{RESET}"
 
 
-parts = []
-any_warn = False
+_CTX_PARTS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
-# ---- context window (absolute tokens vs soft target) ------------------------
-cw = _dict_get(data, "context_window")
-ctx_tokens = cw.get("total_input_tokens")
-if not isinstance(ctx_tokens, (int, float)):
-    cu = _dict_get(cw, "current_usage")
-    ctx_tokens = sum(
-        cu.get(k, 0) or 0
-        for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-    )
-if ctx_tokens:
-    tgt_pct = (ctx_tokens / CTX_TARGET * 100) if CTX_TARGET > 0 else 0.0
-    win_pct = cw.get("used_percentage")
-    tail = f" {DIM}({win_pct:.0f}%){RESET}" if isinstance(win_pct, (int, float)) else ""
-    if CTX_BAR:
-        bar, c = ctx_bar(tgt_pct)
-        parts.append(f"{c}\U0001f9e0 {bar}{c}  {fmt_tokens(ctx_tokens)}{RESET}{tail}")  # 🧠
+
+def ctx_tokens_of(cw):
+    """Context tokens in use, or 0 when the payload carries no usable figure.
+
+    `total_input_tokens` first, else the sum of `current_usage`'s parts. Every
+    value is untrusted: a NaN, an Infinity (1e400) or a string ("5") is
+    skipped rather than allowed to crash the line further down.
+    """
+    tokens = cw.get("total_input_tokens")
+    if not _finite(tokens):
+        cu = _dict_get(cw, "current_usage")
+        tokens = sum(v for v in (cu.get(k) for k in _CTX_PARTS) if _finite(v))
+    return tokens if _finite(tokens) else 0
+
+
+def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    data = parse_payload(sys.stdin.read())
+
+    parts = []
+    any_warn = False
+
+    # ---- context window (absolute tokens vs soft target) --------------------
+    cw = _dict_get(data, "context_window")
+    ctx_tokens = ctx_tokens_of(cw)
+    if ctx_tokens:
+        tgt_pct = (ctx_tokens / CTX_TARGET * 100) if CTX_TARGET > 0 else 0.0
+        win_pct = cw.get("used_percentage")
+        tail = f" {DIM}({win_pct:.0f}%){RESET}" if _finite(win_pct) else ""
+        if CTX_BAR:
+            bar, c = ctx_bar(tgt_pct)
+            parts.append(f"{c}\U0001f9e0 {bar}{c}  {fmt_tokens(ctx_tokens)}{RESET}{tail}")  # 🧠
+        else:
+            c = color_for(tgt_pct)
+            parts.append(f"{c}\U0001f9e0 ctx {fmt_tokens(ctx_tokens)}{RESET}{tail}")  # 🧠
+        any_warn = any_warn or tgt_pct >= WARN
+
+    # ---- cost ledger --------------------------------------------------------
+    # has_cost: the payload carries a cost number at all (so the weekly figure
+    # is worth reading). cost_total: that number once it passed the guards; a
+    # poison total neither enters the ledger nor renders as `sess`.
+    raw_total = _dict_get(data, "cost").get("total_cost_usd")
+    has_cost = isinstance(raw_total, (int, float)) and not isinstance(raw_total, bool)
+    cost_total = float(raw_total) if _valid_total(raw_total) else None
+    now = time.time()
+    # The ledger is written here; the weekly figure is read AFTER the rate
+    # limits below, because which window it covers depends on the 7d gauge we
+    # end up rendering (cost_window_start).
+    if cost_total is not None:
+        cost_tick(data.get("session_id"), cost_total, now)
+
+    # ---- rate limits (the real 5h / 7d numbers) -----------------------------
+    payload_rl = _dict_get(data, "rate_limits")
+    # API-key sessions get `cost` but never `rate_limits`. Decide on the
+    # SANITIZED payload (a rate_limits object holding only garbage windows is
+    # as good as none), and only once the session has actually spent
+    # something: before its first API response a subscriber also has cost 0
+    # and no rate_limits yet, and the shared cache is the right thing to show
+    # it. An API-key session must never borrow a neighbour's plan gauges (they
+    # are somebody else's plan), so it skips the shared-cache sync entirely.
+    api_key_mode = (cost_total is not None and cost_total > 0
+                    and not sanitize_rl(payload_rl, now))
+    if api_key_mode:
+        rl, from_shared = {}, False
     else:
-        c = color_for(tgt_pct)
-        parts.append(f"{c}\U0001f9e0 ctx {fmt_tokens(ctx_tokens)}{RESET}{tail}")  # 🧠
-    any_warn = any_warn or tgt_pct >= WARN
+        rl, from_shared = sync_rate_limits(payload_rl)
 
-# ---- cost ledger ------------------------------------------------------------
-# has_cost: the payload carries a cost number at all (so the weekly figure is
-# worth reading). cost_total: that number once it passed the guards; a poison
-# total neither enters the ledger nor renders as `sess`.
-raw_total = _dict_get(data, "cost").get("total_cost_usd")
-has_cost = isinstance(raw_total, (int, float)) and not isinstance(raw_total, bool)
-cost_total = float(raw_total) if _valid_total(raw_total) else None
-now = time.time()
-# The ledger is written here; the weekly figure is read AFTER the rate limits
-# below, because which window it covers depends on the 7d gauge we end up
-# rendering (cost_window_start).
-if cost_total is not None:
-    cost_tick(data.get("session_id"), cost_total, now)
+    # ---- the weekly figure, over the window that 7d gauge covers ------------
+    week_usd = weekly_cost(now, cost_window_start(rl, now)) if has_cost else None
 
-# ---- rate limits (the real 5h / 7d numbers) ---------------------------------
-payload_rl = _dict_get(data, "rate_limits")
-# API-key sessions get `cost` but never `rate_limits`. Decide on the SANITIZED
-# payload (a rate_limits object holding only garbage windows is as good as
-# none), and only once the session has actually spent something: before its
-# first API response a subscriber also has cost 0 and no rate_limits yet, and
-# the shared cache is the right thing to show it. An API-key session must never
-# borrow a neighbour's plan gauges (they are somebody else's plan), so it skips
-# the shared-cache sync entirely.
-api_key_mode = (cost_total is not None and cost_total > 0
-                and not sanitize_rl(payload_rl, now))
-if api_key_mode:
-    rl, from_shared = {}, False
-else:
-    rl, from_shared = sync_rate_limits(payload_rl)
+    used_rl = False
+    for key, icon, label in (
+        ("five_hour", "\U0001f550", "5h"),   # 🕐
+        ("seven_day", "\U0001f4c5", "7d"),   # 📅
+    ):
+        win = rl.get(key) or {}
+        if isinstance(win.get("used_percentage"), (int, float)):
+            suffix = fmt_reset(win.get("resets_at"))
+            if key == "seven_day" and week_usd is not None:
+                suffix += f" {DIM}{fmt_usd(week_usd)}{RESET}"
+            seg, w = pct_gauge(icon, label, float(win["used_percentage"]), suffix)
+            parts.append(seg)
+            any_warn = any_warn or w
+            used_rl = True
+    if used_rl and from_shared:
+        parts[-1] += f" {DIM}⇄{RESET}"
 
-# ---- the weekly figure, over the window that 7d gauge covers ----------------
-week_usd = weekly_cost(now, cost_window_start(rl, now)) if has_cost else None
+    # ---- API-key layout: no plan gauges, dollars instead ---------------------
+    if api_key_mode:
+        week_seg = f"7d {fmt_usd(week_usd)}"
+        if WEEK_BUDGET > 0:
+            pct = week_usd / WEEK_BUDGET * 100
+            week_seg = f"{color_for(pct)}{week_seg}{RESET}"
+            any_warn = any_warn or pct >= WARN
+        parts.append(f"\U0001f4b5 sess {fmt_usd(cost_total)}")  # 💵
+        parts.append(week_seg)
 
-used_rl = False
-for key, icon, label in (
-    ("five_hour", "\U0001f550", "5h"),   # 🕐
-    ("seven_day", "\U0001f4c5", "7d"),   # 📅
-):
-    win = rl.get(key) or {}
-    if isinstance(win.get("used_percentage"), (int, float)):
-        suffix = fmt_reset(win.get("resets_at"))
-        if key == "seven_day" and week_usd is not None:
-            suffix += f" {DIM}{fmt_usd(week_usd)}{RESET}"
-        seg, w = pct_gauge(icon, label, float(win["used_percentage"]), suffix)
-        parts.append(seg)
-        any_warn = any_warn or w
-        used_rl = True
-if used_rl and from_shared:
-    parts[-1] += f" {DIM}⇄{RESET}"
+    # ---- model (last) -------------------------------------------------------
+    md = _dict_get(data, "model")
+    parts.append(f"\U0001f916 {sanitize_label(md.get('display_name') or md.get('id') or '?')}")
 
-# ---- API-key layout: no plan gauges, dollars instead -------------------------
-if api_key_mode:
-    week_seg = f"7d {fmt_usd(week_usd)}"
-    if WEEK_BUDGET > 0:
-        pct = week_usd / WEEK_BUDGET * 100
-        week_seg = f"{color_for(pct)}{week_seg}{RESET}"
-        any_warn = any_warn or pct >= WARN
-    parts.append(f"\U0001f4b5 sess {fmt_usd(cost_total)}")  # 💵
-    parts.append(week_seg)
+    prefix = "⚠️  " if any_warn else ""
+    print(prefix + " | ".join(parts))
 
-# ---- model (last) -----------------------------------------------------------
-md = _dict_get(data, "model")
-parts.append(f"\U0001f916 {sanitize_label(md.get('display_name') or md.get('id') or '?')}")
 
-prefix = "⚠️  " if any_warn else ""
-print(prefix + " | ".join(parts))
+if __name__ == "__main__":
+    main()

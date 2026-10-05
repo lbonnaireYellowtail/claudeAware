@@ -1,9 +1,10 @@
 // The line's logic, with nothing of the engine in it, so it can be tested on its
-// own. Ported from the v1.4.0 statusline.py, guards unchanged (ADR-0001 /
-// ADR-0003), file formats too: every session on this machine, on this mod or on
+// own. Ported from statusline.py, and kept rule for rule the same as it (ADR-0001
+// / ADR-0003), file formats too: every session on this machine, on this mod or on
 // the statusline script beside it, reads and writes the same files under
 // ~/.cache/claude-statusline/, so each has to distrust what the others wrote
-// exactly as it distrusts itself.
+// exactly as it distrusts itself. The format of those files is specified in
+// docs/cache-format.md; a change to it lands in both tools at once.
 
 import type { Level, Levels, RateLimits, RlWindow, Snapshot } from '../types'
 
@@ -43,15 +44,23 @@ export const isFiniteNumber = (v: unknown): v is number =>
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
+// The script's off-list for STATUSLINE_CTX_BAR, compared trimmed and lower-cased.
+const CTX_BAR_OFF = ['0', 'false', 'no', 'off']
+
 /** Config from userConfig values: anything malformed falls back to the default. */
 export function configFrom(options: Readonly<Record<string, unknown>>): Config {
   const num = (key: string, fallback: number) => {
-    const v = typeof options[key] === 'string' ? Number(options[key]) : options[key]
+    const raw = options[key]
+    // A blank string is unset, as an empty env var is to the script (Number('') is 0).
+    const v = typeof raw === 'string' ? (raw.trim() ? Number(raw) : NaN) : raw
     return isFiniteNumber(v) ? v : fallback
   }
+  const bar = options.ctxBar
   return {
     ctxTarget: num('ctxTarget', DEFAULTS.ctxTarget),
-    ctxBar: options.ctxBar !== false,
+    ctxBar: typeof bar === 'boolean' ? bar
+      : bar === undefined || bar === null ? DEFAULTS.ctxBar
+      : !CTX_BAR_OFF.includes(String(bar).trim().toLowerCase()),
     ctxBarCells: Math.max(1, Math.min(60, Math.trunc(num('ctxBarCells', DEFAULTS.ctxBarCells)))),
     caution: num('cautionPct', DEFAULTS.caution),
     warn: num('warnPct', DEFAULTS.warn),
@@ -66,6 +75,35 @@ export function sanitizeLabel(name: unknown, limit = 64): string {
   const cleaned = String(name ?? '').replace(LABEL_DISALLOWED, '')
   return cleaned ? cleaned.slice(0, limit) : '?'
 }
+
+// ---- rounding, as Python does it ------------------------------------------
+
+/**
+ * Python's `format(x, '.{digits}f')`, and so `round(x, digits)`: the exact
+ * binary value of x, correctly rounded, ties to even. toFixed rounds the exact
+ * value too but sends ties away from zero (and Math.round sends them up), which
+ * drew `12.5%` as `13%` here and `12%` in the script.
+ *
+ * A tie can only be exact: x * 10^d is k + 1/2 exactly iff x * 2^(d+1) is an
+ * odd integer (the 5^d in 10^d never divides a power of two), and scaling by a
+ * power of two is exact in floating point. So 12.5, 0.125 and 62.25 are ties;
+ * 60.55, really 60.54999..., is not, in either tool. Past 1e21, where toFixed
+ * switches to exponent notation, the two would differ; no real figure is there.
+ */
+export function pyFixed(x: number, digits = 0): string {
+  const s = x.toFixed(digits)
+  const y = Math.abs(x) * 2 ** (digits + 1)
+  const n = y * 5 ** digits
+  if (!Number.isInteger(y) || y % 2 !== 1 || n >= Number.MAX_SAFE_INTEGER) return s
+  // A tie: toFixed took the neighbour away from zero, Python takes the even one.
+  const below = (n - 1) / 2
+  const q = String(below % 2 === 0 ? below : below + 1).padStart(digits + 1, '0')
+  const body = digits ? `${q.slice(0, -digits)}.${q.slice(-digits)}` : q
+  return (x < 0 ? '-' : '') + body
+}
+
+/** Python's `round(x, digits)`. */
+export const pyRound = (x: number, digits = 0): number => (Number.isFinite(x) ? Number(pyFixed(x, digits)) : x)
 
 // ---- rate limits: sanitize, freshness, sync (CS-003) ------------------------
 
@@ -88,31 +126,55 @@ export function fromEngine(
   return out
 }
 
-/** Keep only trustworthy values; applied to both sides of the sync. */
+const wholeSeconds = (v: unknown): number | undefined => (isFiniteNumber(v) ? pyRound(v, 0) : undefined)
+
+/**
+ * Keep only trustworthy values; applied to both sides of the sync.
+ *
+ * A resets_at that has already passed means the window rolled over since the
+ * reading: its % reads as 0 with no countdown, not as a stale alarm. A recent
+ * one (now - horizon <= resets_at < now) is kept as `rolled_at`, the start of
+ * the window that followed. Readings are normalised to one precision (% to 1
+ * decimal, instants to whole seconds), so the same reading taken by the script
+ * and by the mod compares equal. Same rules as sanitize_rl.
+ */
 export function sanitizeRl(rl: unknown, now: number): RateLimits {
   const out: RateLimits = {}
   if (!isRecord(rl)) return out
   for (const w of WINDOWS) {
     const win = rl[w]
     if (!isRecord(win)) continue
-    const clean: RlWindow = {}
+    const horizon = RESET_HORIZON[w]
+    let clean: RlWindow = {}
     const pct = win.used_percentage
-    if (isFiniteNumber(pct)) clean.used_percentage = Math.max(0, Math.min(100, pct))
-    const reset = win.resets_at
-    if (isFiniteNumber(reset) && now <= reset && reset <= now + RESET_HORIZON[w]) {
-      clean.resets_at = reset
+    if (isFiniteNumber(pct)) clean.used_percentage = pyRound(Math.max(0, Math.min(100, pct)), 1)
+    const reset = wholeSeconds(win.resets_at)
+    let rolled = wholeSeconds(win.rolled_at)
+    if (reset !== undefined && reset >= now) {
+      if (reset <= now + horizon) clean.resets_at = reset
+      // else: implausibly far out, i.e. poison; dropped, the % stands
+    } else {
+      if (reset !== undefined) rolled = reset // this reading's own window has ended
+      if (rolled !== undefined && rolled < now) {
+        clean = { used_percentage: 0 }
+        if (rolled >= now - horizon) clean.rolled_at = rolled
+      }
     }
     if (Object.keys(clean).length) out[w] = clean
   }
   return out
 }
 
-/** Monotone key: (resets_at, pct) per window never decreases within an account. */
+/**
+ * Monotone key: (resets_at, pct) per window never decreases within an account.
+ * A rolled-over window ranks by its `rolled_at`, which is past: below any live
+ * reading, above a window with no reset at all.
+ */
 export function rlFreshness(rl: RateLimits): number[] {
   const key: number[] = []
   for (const w of WINDOWS) {
     const win = rl[w] ?? {}
-    key.push(win.resets_at ?? -1, win.used_percentage ?? -1)
+    key.push(win.resets_at ?? win.rolled_at ?? -1, win.used_percentage ?? -1)
   }
   return key
 }
@@ -137,6 +199,13 @@ export function syncRateLimits(mine: unknown, sharedFile: unknown, now: number):
   if (cmp < 0) return { rl: shared, fromShared: true, publish: null }
   return { rl, fromShared: false, publish: null }
 }
+
+// The "v" written into both cache files (docs/cache-format.md). Readers ignore
+// it; a file without one is format 1 too (written before the field existed).
+export const CACHE_FORMAT = 1
+
+/** What shared-rate-limits.json holds once `rl` is published. */
+export const sharedCacheFile = (rl: RateLimits) => ({ v: CACHE_FORMAT, rate_limits: rl })
 
 // ---- weekly cost ledger (ADR-0003 / CS-008) ---------------------------------
 
@@ -190,35 +259,45 @@ export function costTick(stored: unknown, total: number, now: number) {
   const delta = Math.min(COST_CAP_DELTA, last === null ? total : total - last)
   const h = String(Math.floor(now / HOUR))
   const buckets = { ...ledger.buckets, [h]: (ledger.buckets[h] ?? 0) + delta }
-  return { last_total: total, seen: now, buckets }
+  return { v: CACHE_FORMAT, last_total: total, seen: now, buckets }
 }
 
-/** The plan's seven-day window start, else a trailing 168 h (cost_window_start). */
+/**
+ * The plan's seven-day window start (cost_window_start): from resets_at minus
+ * seven days, or from a rolled-over window's `rolled_at`, else a trailing 168 h.
+ */
 export function costWindowStart(rl: RateLimits, now: number): number {
   const rolling = now - WEEK_HOURS * HOUR
   const reset = rl.seven_day?.resets_at
-  if (!isFiniteNumber(reset)) return rolling
-  return Math.max(rolling, Math.min(reset - WEEK_HOURS * HOUR, now))
+  if (isFiniteNumber(reset)) return Math.max(rolling, Math.min(reset - WEEK_HOURS * HOUR, now))
+  const rolled = rl.seven_day?.rolled_at
+  if (isFiniteNumber(rolled)) return Math.max(rolling, Math.min(rolled, now))
+  return rolling
 }
 
-export type LedgerFile = { name: string; mtimeMs: number; size: number }
+export type LedgerFile = { name: string; mtimeMs: number; size: number; isLink?: boolean }
 
 const SESSION_TTL = 30 * 86400 // forget (delete) a session file after this
 const TOUCH_AFTER = 86400 // refresh an idle live session's mtime this often
-// What may be handed to `rm`: a bare file name, never an option or a path.
-const SAFE_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,95}$/
+// What the 30-day forget may hand to `rm`: a ledger's own name or the script's
+// orphaned temp file for one (<name>.json.<pid>.tmp). A bare name, never a path
+// or `..`; one starting with `-` is safe too, behind the `--`. Anything else in
+// cost/ is not ours and is left alone.
+const LEDGER_FILE = /^[A-Za-z0-9_-]{1,64}\.json(\.[0-9]+\.tmp)?$/
 
-/** Files past the 30-day session memory: ledgers and orphaned .tmp files alike. */
+/** Files past the 30-day session memory: ledgers and orphaned .tmp files, never a symlink. */
 export const forgotten = (files: readonly LedgerFile[], now: number): string[] =>
-  files.filter(f => f.mtimeMs < (now - SESSION_TTL) * 1000 && SAFE_NAME.test(f.name)).map(f => f.name)
+  files
+    .filter(f => !f.isLink && f.mtimeMs < (now - SESSION_TTL) * 1000 && LEDGER_FILE.test(f.name))
+    .map(f => f.name)
 
 /** An idle session's own ledger is rewritten about daily so it is never forgotten. */
 export const needsTouch = (mtimeMs: number, now: number) => now * 1000 - mtimeMs > TOUCH_AFTER * 1000
 
-/** Which ledger files are worth reading: fresh enough, sane size, .json. */
+/** Which ledger files are worth reading: fresh enough, sane size, .json, not a symlink. */
 export function readableLedgers(files: readonly LedgerFile[], now: number): LedgerFile[] {
   const stale = (now - (WEEK_HOURS + 1) * HOUR) * 1000
-  return files.filter(f => f.name.endsWith('.json') && f.mtimeMs >= stale && f.size <= COST_MAX_FILE)
+  return files.filter(f => !f.isLink && f.name.endsWith('.json') && f.mtimeMs >= stale && f.size <= COST_MAX_FILE)
 }
 
 /** Sum the in-window buckets of the ledgers read (weekly_cost's sum). */
@@ -253,11 +332,10 @@ export const colorFor = (pct: number, cfg: Config) =>
   pct >= cfg.warn ? RED : pct >= cfg.caution ? YELLOW : GREEN
 
 /** 60541 -> '60.5k', 850 -> '850'. */
-export const fmtTokens = (t: number) => (t >= 1000 ? `${(t / 1000).toFixed(1)}k` : String(Math.trunc(t)))
+export const fmtTokens = (t: number) => (t >= 1000 ? `${pyFixed(t / 1000, 1)}k` : String(Math.trunc(t)))
 
 /** 1.2 -> '$1.20', 35.4 -> '$35'. */
-export const fmtUsd = (v: number) =>
-  Math.round(v * 100) / 100 < 10 ? `$${v.toFixed(2)}` : `$${v.toFixed(0)}`
+export const fmtUsd = (v: number) => (pyRound(v, 2) < 10 ? `$${pyFixed(v, 2)}` : `$${pyFixed(v, 0)}`)
 
 /** '→5d4h' / '→3h12m' / '→45m' until `epoch` (seconds), or '' if past or unusable. */
 export function fmtReset(epoch: number | undefined, now: number): string {
@@ -275,7 +353,7 @@ export function fmtReset(epoch: number | undefined, now: number): string {
 /** The ctx bar: filled cells in the state colour, the rest the same colour faded. */
 export function ctxBar(pct: number, cfg: Config): Span[] {
   const rgb = pct >= cfg.warn ? RGB_WARN : pct >= cfg.caution ? RGB_CAUTION : RGB_OK
-  const filled = Math.max(0, Math.min(cfg.ctxBarCells, Math.round((pct / 100) * cfg.ctxBarCells)))
+  const filled = Math.max(0, Math.min(cfg.ctxBarCells, pyRound((pct / 100) * cfg.ctxBarCells)))
   const spans: Span[] = []
   if (filled) spans.push({ text: '▬'.repeat(filled), color: hex(rgb) })
   if (cfg.ctxBarCells - filled) {
@@ -289,13 +367,15 @@ export function buildLine(s: Snapshot, cfg: Config, now: number): Line {
   const segments: Span[][] = []
   let anyWarn = false
 
-  if (s.ctxTokens) {
-    const tgtPct = cfg.ctxTarget > 0 ? (s.ctxTokens / cfg.ctxTarget) * 100 : 0
+  // A non-finite token count draws no ctx segment, as in the script.
+  const ctxTokens = isFiniteNumber(s.ctxTokens) ? s.ctxTokens : 0
+  if (ctxTokens) {
+    const tgtPct = cfg.ctxTarget > 0 ? (ctxTokens / cfg.ctxTarget) * 100 : 0
     const c = colorFor(tgtPct, cfg)
     const seg: Span[] = cfg.ctxBar
-      ? [{ text: '\u{1f9e0} ', color: c }, ...ctxBar(tgtPct, cfg), { text: `  ${fmtTokens(s.ctxTokens)}`, color: c }]
-      : [{ text: `\u{1f9e0} ctx ${fmtTokens(s.ctxTokens)}`, color: c }]
-    if (s.ctxPercent !== null) seg.push({ text: ` (${s.ctxPercent.toFixed(0)}%)`, dim: true })
+      ? [{ text: '\u{1f9e0} ', color: c }, ...ctxBar(tgtPct, cfg), { text: `  ${fmtTokens(ctxTokens)}`, color: c }]
+      : [{ text: `\u{1f9e0} ctx ${fmtTokens(ctxTokens)}`, color: c }]
+    if (isFiniteNumber(s.ctxPercent)) seg.push({ text: ` (${pyFixed(s.ctxPercent, 0)}%)`, dim: true })
     segments.push(seg)
     anyWarn ||= tgtPct >= cfg.warn
   }
@@ -309,7 +389,7 @@ export function buildLine(s: Snapshot, cfg: Config, now: number): Line {
     if (!isFiniteNumber(win?.used_percentage)) continue
     const pct = win.used_percentage
     const c = colorFor(pct, cfg)
-    const seg: Span[] = [{ text: `${icon} ${label} ${pct.toFixed(0)}%`, color: c }]
+    const seg: Span[] = [{ text: `${icon} ${label} ${pyFixed(pct, 0)}%`, color: c }]
     const reset = fmtReset(win.resets_at, now)
     if (reset) seg.push({ text: ` ${reset}`, dim: true })
     if (key === 'seven_day' && s.weekUsd !== null) seg.push({ text: ` ${fmtUsd(s.weekUsd)}`, dim: true })
@@ -343,13 +423,31 @@ export const plainLine = (line: Line) =>
 export function levelsOf(s: Snapshot, cfg: Config): Levels {
   const level = (pct: number): Level => (pct >= cfg.warn ? 2 : pct >= cfg.caution ? 1 : 0)
   const out: Levels = {}
-  if (s.ctxTokens && cfg.ctxTarget > 0) out.ctx = level((s.ctxTokens / cfg.ctxTarget) * 100)
+  if (isFiniteNumber(s.ctxTokens) && s.ctxTokens && cfg.ctxTarget > 0) {
+    out.ctx = level((s.ctxTokens / cfg.ctxTarget) * 100)
+  }
   for (const key of WINDOWS) {
     const pct = s.rl[key]?.used_percentage
     if (isFiniteNumber(pct) && !s.fromShared) out[key] = level(pct)
   }
   if (s.apiKeyMode && cfg.weekBudget > 0 && s.weekUsd !== null) {
     out.week_usd = level((s.weekUsd / cfg.weekBudget) * 100)
+  }
+  return out
+}
+
+/**
+ * The levels to remember after a reading. A plan gauge drawn from the shared
+ * cache has no level of its own (it never toasts), so it keeps the one from
+ * this session's last own reading: otherwise the next own reading compares
+ * against nothing and toasts again each time sessions take turns.
+ */
+export function carryLevels(was: Levels, is: Levels, s: Snapshot): Levels {
+  if (!s.fromShared) return is
+  const out: Levels = { ...is }
+  for (const key of WINDOWS) {
+    const prev = was[key]
+    if (prev !== undefined && out[key] === undefined) out[key] = prev
   }
   return out
 }
@@ -365,7 +463,7 @@ export function newAlerts(prev: Levels, next: Levels, s: Snapshot, now: number):
       const win = s.rl[key as 'five_hour' | 'seven_day']
       const label = key === 'five_hour' ? '5h' : '7d'
       const reset = fmtReset(win?.resets_at, now)
-      out.push(`${label} limit at ${(win?.used_percentage ?? 0).toFixed(0)}%${reset ? `, resets ${reset}` : ''}`)
+      out.push(`${label} limit at ${pyFixed(win?.used_percentage ?? 0, 0)}%${reset ? `, resets ${reset}` : ''}`)
     }
   }
   return out
