@@ -3,6 +3,7 @@ import type { EngineInterface, Register, SessionUsage } from 'claude-code'
 
 import {
   buildLine,
+  carryLevels,
   configFrom,
   costTick,
   costWindowStart,
@@ -15,6 +16,7 @@ import {
   newAlerts,
   plainLine,
   readableLedgers,
+  sharedCacheFile,
   syncRateLimits,
   validTotal,
   weeklyCost,
@@ -52,6 +54,23 @@ async function cacheDir($: EngineInterface): Promise<string | null> {
   return home ? `${home}/.cache/claude-statusline` : null
 }
 
+/**
+ * Whether `path` is a symlink. $.fs.write writes in place and would follow
+ * one (a planted `shared-rate-limits.json -> ~/.zshrc`), and the sweep through
+ * a symlinked cost/ would delete in the folder it points at, so neither is
+ * ever done through a link. A path that does not exist is not one.
+ */
+async function isLink($: EngineInterface, path: string): Promise<boolean> {
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  return stat?.isLink === true
+}
+
+// Windows has no /bin/rm, so the sweep is skipped there. The mod API exposes
+// no platform, but Windows sets OS=Windows_NT in every session's environment.
+async function isWindows($: EngineInterface): Promise<boolean> {
+  return (await $.env.get('OS')) === 'Windows_NT'
+}
+
 async function measure($: EngineInterface, figures?: Figures): Promise<void> {
   const { cfg, isStatus, hasAlerts } = settings
   const usage = figures ?? (await $.session.usage())
@@ -63,42 +82,49 @@ async function measure($: EngineInterface, figures?: Figures): Promise<void> {
   const payloadRl: RateLimits = fromEngine(usage.rateLimits)
   const apiKeyMode = isApiKeyMode(costTotal, payloadRl, now)
 
+  // A symlinked cost/ folder is neither read, written nor swept.
+  const isCostDirOk = dir !== null && !(await isLink($, `${dir}/cost`))
+
   // The ledger: this session's own file.
   const name = ledgerName(await $.session.id())
-  if (dir && name && costTotal !== null) {
+  if (dir && isCostDirOk && name && costTotal !== null) {
     const path = `${dir}/cost/${name}`
     const text = await $.fs.read(path).catch(() => undefined)
     const next = costTick(text === undefined ? undefined : parse(text), costTotal, now)
     if (next) {
-      await $.fs.write(path, JSON.stringify(next)).catch(() => undefined)
+      if (!(await isLink($, path))) await $.fs.write(path, JSON.stringify(next)).catch(() => undefined)
     } else if (text !== undefined) {
       const stat = await $.fs.stat(path).catch(() => undefined)
-      if (stat && needsTouch(stat.mtimeMs, now)) await $.fs.write(path, text).catch(() => undefined)
+      if (stat && !stat.isLink && needsTouch(stat.mtimeMs, now)) await $.fs.write(path, text).catch(() => undefined)
     }
   }
 
   // Rate limits: render the freshest known, publish ours when it wins. An
-  // API-key session never borrows a neighbour's plan.
+  // API-key session never borrows a neighbour's plan. With no HOME there is
+  // no cache, but our own live gauges still draw, as in the script.
   let rl: RateLimits = {}
   let fromShared = false
-  if (!apiKeyMode && dir) {
-    const sharedPath = `${dir}/shared-rate-limits.json`
-    const shared = await $.fs.read(sharedPath).then(parse, () => undefined)
+  if (!apiKeyMode) {
+    const sharedPath = dir ? `${dir}/shared-rate-limits.json` : null
+    const shared = sharedPath ? await $.fs.read(sharedPath).then(parse, () => undefined) : undefined
     const sync = syncRateLimits(payloadRl, shared, now)
     ;({ rl, fromShared } = sync)
-    if (sync.publish) {
-      await $.fs.write(sharedPath, JSON.stringify({ rate_limits: sync.publish })).catch(() => undefined)
+    if (sync.publish && sharedPath && !(await isLink($, sharedPath))) {
+      await $.fs.write(sharedPath, JSON.stringify(sharedCacheFile(sync.publish))).catch(() => undefined)
     }
   }
 
   let weekUsd: number | null = null
   if (dir && raw !== undefined) {
-    const files = (await $.fs.list(`${dir}/cost`).catch(() => [])).filter(f => f.kind === 'file')
+    const files = isCostDirOk
+      ? (await $.fs.list(`${dir}/cost`).catch(() => [])).filter(f => f.kind === 'file')
+      : []
     // The 30-day forget, which is also what drops a session's baseline.
-    // $.fs has no delete; `rm` is handed bare, allow-listed names only.
+    // $.fs has no delete; `/bin/rm` (never a PATH lookup) is handed bare,
+    // allow-listed ledger names only, and never a symlink.
     const stale = forgotten(files, now)
-    if (stale.length) {
-      await $.process.run(['rm', '-f', '--', ...stale], { cwd: `${dir}/cost` }).catch(() => undefined)
+    if (stale.length && !(await isWindows($))) {
+      await $.process.run(['/bin/rm', '-f', '--', ...stale], { cwd: `${dir}/cost` }).catch(() => undefined)
     }
     const texts = await Promise.all(
       readableLedgers(files, now).map(f =>
@@ -123,7 +149,7 @@ async function measure($: EngineInterface, figures?: Figures): Promise<void> {
   if (isStatus) $.ui.status(plainLine(buildLine(snap, cfg, now)))
 
   const was: Levels = await read($, levels)
-  const is = levelsOf(snap, cfg)
+  const is = carryLevels(was, levelsOf(snap, cfg), snap)
   if (hasAlerts) for (const text of newAlerts(was, is, snap, now)) $.ui.toast(text, { timeoutMs: 8000 })
   await update($, levels, () => is)
 }

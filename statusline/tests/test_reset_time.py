@@ -2,8 +2,7 @@
 
 Black-box: drives statusline.py as a subprocess with a sandboxed HOME so it
 never touches the real cache, mirroring how Claude Code invokes it. Matches the
-render output rather than importing the module (statusline.py reads stdin at
-import time, so it can't be imported cleanly).
+render output, which is the contract the countdown has to honour.
 """
 import json
 import os

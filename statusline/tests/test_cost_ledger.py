@@ -387,10 +387,6 @@ class CcusageRetiredTest(StatuslineTestCase):
         self.assertEqual(ANSI.sub("", r.stdout).strip(), "🤖 x")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PlanWindowAlignmentTest(LedgerTestCase):
     """The $ figure covers the window its own gauge is about (CS-010).
 
@@ -444,8 +440,10 @@ class PlanWindowAlignmentTest(LedgerTestCase):
     def test_unusable_resets_at_falls_back_to_the_trailing_week(self):
         # A seven_day window whose resets_at is missing or implausible still
         # renders a %, so it still needs a figure: the trailing week.
+        # (A resets_at in the PAST is not unusable: the window rolled over, see
+        # test_window_rolled_over_since_the_reading_counts_from_the_old_reset.)
         self.seeded()
-        for reset in (None, "soon", float("nan"), time.time() - DAY, time.time() + 30 * DAY):
+        for reset in (None, "soon", float("nan"), time.time() + 30 * DAY):
             with self.subTest(resets_at=reset):
                 rate_limits = self.rl_at(reset)
                 if reset is None:
@@ -478,3 +476,123 @@ class PlanWindowAlignmentTest(LedgerTestCase):
         self.assertIn("seed.json", self.ledger_files())
         r = self.tick("api", 1.0)  # same ledger, read over the trailing week
         self.assertAlmostEqual(self.week_usd(r), 62.0, places=2)
+
+    def test_window_rolled_over_since_the_reading_counts_from_the_old_reset(self):
+        # BUG-1: an idle session's payload still says the 7d window resets at
+        # R, but R was a day ago. The window that followed started AT R, so
+        # the $ counts from there (the 2 h-old $10, not the 100 h-old $50), and
+        # the % from the dead window is not shown as current.
+        self.seeded()
+        r = self.tick("sub", 0.0, rate_limits=self.rl_at(time.time() - DAY, p7=91))
+        out = plain(r)
+        self.assertIn("📅 7d 0%", out)
+        self.assertNotIn("91%", out)
+        self.assertAlmostEqual(self.sub_week_usd(r), 10.0, places=2)
+
+
+class RolledOverWindowTest(LedgerTestCase):
+    """BUG-1: once resets_at has passed, the % it came with is history."""
+
+    def test_passed_five_hour_reset_shows_zero_not_the_stale_alarm(self):
+        now = int(time.time())
+        r = self.tick("idle", 1.0, rate_limits={
+            "five_hour": {"used_percentage": 92, "resets_at": now - 600},
+            "seven_day": {"used_percentage": 12, "resets_at": now + 3 * DAY},
+        })
+        out = plain(r)
+        self.assertIn("🕐 5h 0% | ", out)  # no countdown either
+        self.assertNotIn("92%", out)
+        self.assertFalse(out.startswith("⚠"), out)
+        # What every idle terminal now picks up is the rollover, not the 92 %.
+        five = self.read_shared_cache()["rate_limits"]["five_hour"]
+        self.assertEqual(five, {"used_percentage": 0.0, "rolled_at": float(now - 600)})
+
+    def test_long_past_reset_still_reads_as_rolled_over(self):
+        # Idle overnight: the reset is further back than the window is long.
+        r = self.tick("idle", 1.0, rate_limits={
+            "five_hour": {"used_percentage": 92, "resets_at": int(time.time()) - 9 * HOUR}})
+        self.assertIn("🕐 5h 0%", plain(r))
+
+    def test_a_live_reading_beats_a_rollover_in_the_cache(self):
+        now = int(time.time())
+        self.tick("idle", 1.0, rate_limits={
+            "five_hour": {"used_percentage": 92, "resets_at": now - 600}})
+        r = self.tick("busy", 2.0, rate_limits={
+            "five_hour": {"used_percentage": 3, "resets_at": now + 4 * HOUR}})
+        self.assertIn("🕐 5h 3% →", plain(r))
+        self.assertNotIn("⇄", plain(r))
+        self.assertEqual(self.read_shared_cache()["rate_limits"]["five_hour"]["used_percentage"], 3)
+
+    def test_a_rollover_beats_a_stale_percentage_without_a_reset(self):
+        # What v1.4.0 published in this situation: the % with the reset dropped.
+        # The rollover is the newer knowledge, so it is shown and republished.
+        now = int(time.time())
+        os.makedirs(self.cache_dir, exist_ok=True)
+        with open(os.path.join(self.cache_dir, "shared-rate-limits.json"), "w") as f:
+            json.dump({"rate_limits": {"five_hour": {"used_percentage": 92.0}}}, f)
+        r = self.tick("idle", 1.0, rate_limits={
+            "five_hour": {"used_percentage": 92, "resets_at": now - 600}})
+        self.assertIn("🕐 5h 0%", plain(r))
+        self.assertEqual(self.read_shared_cache()["rate_limits"]["five_hour"]["used_percentage"], 0)
+
+
+class LedgerSafetyTest(LedgerTestCase):
+    """SEC-1 / SEC-2: the sweep stays in its own folder; huge numbers don't crash."""
+
+    def test_symlinked_cost_dir_is_never_swept_read_or_written(self):
+        victim = os.path.join(self.home, "victim")
+        os.makedirs(victim)
+        thesis = os.path.join(victim, "thesis.docx")
+        with open(thesis, "w") as f:
+            f.write("years of work")
+        old = time.time() - 400 * DAY
+        os.utime(thesis, (old, old))
+        ledger = os.path.join(victim, "other.json")
+        with open(ledger, "w") as f:
+            json.dump({"last_total": 50, "buckets": {str(CUR_H): 50}}, f)
+        os.makedirs(self.cache_dir, exist_ok=True)
+        os.symlink(victim, self.cost_dir)
+        r = self.tick("abc", 1.0)
+        self.assertTrue(os.path.exists(thesis))
+        self.assertEqual(sorted(os.listdir(victim)), ["other.json", "thesis.docx"])
+        self.assertIn("7d $0.00", plain(r))  # nothing read through the link either
+
+    def test_only_ledger_names_are_swept(self):
+        old = time.time() - 31 * DAY
+        self.write_ledger("thesis.docx", "keep me", mtime=old)
+        self.write_ledger("notes.json.bak", "keep me", mtime=old)
+        self.write_ledger("old-session.json", {"last_total": 1, "buckets": {}}, mtime=old)
+        self.write_ledger("old-session.json.77.tmp", "{", mtime=old)
+        self.tick("s1", 1.0)
+        self.assertEqual(self.ledger_files(), ["notes.json.bak", "s1.json", "thesis.docx"])
+
+    def test_symlinked_entry_is_neither_followed_nor_deleted(self):
+        outside = os.path.join(self.home, "outside.json")
+        with open(outside, "w") as f:
+            json.dump({"last_total": 70, "buckets": {str(CUR_H): 70}}, f)
+        old = time.time() - 31 * DAY
+        os.utime(outside, (old, old))
+        os.makedirs(self.cost_dir)
+        os.symlink(outside, os.path.join(self.cost_dir, "link.json"))
+        r = self.tick("s1", 1.0)
+        self.assertAlmostEqual(self.week_usd(r), 1.0, places=2)
+        self.assertTrue(os.path.islink(os.path.join(self.cost_dir, "link.json")))
+        self.assertTrue(os.path.exists(outside))
+
+    def test_huge_integer_in_a_ledger_does_not_crash(self):
+        self.write_ledger("junk.json", '{"last_total": %s, "buckets": {"%d": %s}}'
+                          % ("9" * 400, CUR_H, "9" * 400))
+        r = self.tick("s1", 1.0)
+        self.assertAlmostEqual(self.week_usd(r), 1.0, places=2)
+
+    def test_ledgers_carry_the_format_version(self):
+        self.tick("s1", 1.0)
+        self.assertEqual(self.read_ledger("s1")["v"], 1)
+        # ...and a ledger without one (written before it existed) still counts.
+        self.write_ledger("older.json", {"last_total": 4, "buckets": {str(CUR_H): 4}})
+        r = self.tick("s1", 1.0)
+        self.assertAlmostEqual(self.week_usd(r), 5.0, places=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

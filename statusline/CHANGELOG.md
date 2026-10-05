@@ -5,11 +5,51 @@ Releases up to 1.4.0 are tagged `v<version>`; later ones `statusline-v<version>`
 
 ## [Unreleased]
 
+### Security
+- **The 30-day ledger sweep no longer deletes outside its own folder.** It followed a
+  symlinked `cost/` and deleted any file older than 30 days in the folder the link
+  pointed at, whatever its name. Now a symlinked `cost/` is neither read, written nor
+  swept, entries are looked at with `lstat` (a symlink is never followed or deleted),
+  and only regular files named like a ledger (`<session id>.json`) or its orphaned temp
+  file (`<session id>.json.<pid>.tmp`) are deleted.
+- **A huge integer in the shared cache, a ledger or the payload no longer crashes the
+  line.** A 400-digit number made `math.isfinite` raise `OverflowError`, so every
+  session exited 1 and, in the shared cache, before the publish that could have
+  overwritten it. JSON integers are now read as floats (so they read as Infinity and
+  are rejected), and the rate-limit checks share the ledger's `_finite` guard, which
+  also stops `true` reading as 1 %.
+
+### Fixed
+- **A window whose reset has passed shows 0 %, not its old reading.** An idle session
+  kept drawing (and publishing to every idle terminal) the last % of a window that had
+  already rolled over, e.g. a red `5h 92%` after the reset. It now reads as `0%` with no
+  countdown, and a 7-day window that rolled over counts the `$` from the reset it passed
+  instead of falling back to a trailing week.
+- A NaN, Infinity or non-numeric context figure (`total_input_tokens`,
+  `current_usage.*`, `used_percentage`) no longer crashes the line or prints `inf%`; the
+  segment is skipped, as in aware-mod.
+
 ### Changed
+- Rate-limit readings are normalised before they are compared or published: the % to
+  1 decimal, `resets_at` to whole seconds. The same reading seen by this script and by
+  aware-mod now compares equal, so neither side wins with a stale copy of it.
+- Both cache files now carry `"v": 1`, and a rolled-over window carries `rolled_at`.
+  Both are optional extras: released readers (statusline 1.4.0, aware-mod 1.0.0) drop
+  fields they do not know and keep working. The format is specified in
+  [`docs/cache-format.md`](../docs/cache-format.md).
+- The script draws the line from `main()`; importing it has no side effects (no stdin
+  read, no output), so its functions can be imported and tested. It is still one
+  stdlib-only file, and the install is unchanged.
 - The project is now **claudeAware**, a repo holding two tools: this statusline and
   [`aware-mod`](../aware-mod/), the same line as a Claude Code mod. The script moved to
   `statusline/`; `install.sh` stays at the repo root, so the one-liner keeps working
-  (GitHub redirects the old `claude-statusline` URLs). `statusline.py` is unchanged.
+  (GitHub redirects the old `claude-statusline` URLs).
+
+### Added
+- Regression tests for all of the above, a test that a staler session never overwrites
+  a fresher shared cache, and coverage for the `current_usage` fallback and the
+  countdown / publish path. `test_cost_ledger.py` run directly no longer skips its last
+  class.
 
 ## [1.4.0] — 2026-09-14
 

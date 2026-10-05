@@ -81,18 +81,29 @@ class StatuslineTestCase(unittest.TestCase):
             return None
 
 
+def plausible_resets():
+    """resets_at values sanitize_rl keeps (a far-future one would be dropped).
+
+    30 s past the minute, so the subprocess's own clock read cannot round the
+    countdown across a minute boundary.
+    """
+    now = int(time.time()) + 30
+    return now + 2 * 3600, now + 3 * 86400 + 4 * 3600
+
+
 class SmokeTest(StatuslineTestCase):
     """A normal payload renders a full line and exits 0."""
 
     def test_normal_payload_renders(self):
+        reset5, reset7 = plausible_resets()
         payload = {
             "context_window": {
                 "total_input_tokens": 60541,
                 "used_percentage": 30,
             },
             "rate_limits": {
-                "five_hour": {"used_percentage": 42, "resets_at": 9999999999},
-                "seven_day": {"used_percentage": 12, "resets_at": 9999999999},
+                "five_hour": {"used_percentage": 42, "resets_at": reset5},
+                "seven_day": {"used_percentage": 12, "resets_at": reset7},
             },
             "model": {"display_name": "Opus 4.8 (1M context)", "id": "claude-opus-4-8"},
         }
@@ -100,11 +111,96 @@ class SmokeTest(StatuslineTestCase):
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("Opus 4.8 (1M context)", result.stdout)
-        # 5h / 7d gauges from the rate_limits path.
+        # 5h / 7d gauges from the rate_limits path, countdowns included.
         self.assertIn("5h", result.stdout)
         self.assertIn("7d", result.stdout)
+        self.assertIn("→2h00m", result.stdout)
+        self.assertIn("→3d4h", result.stdout)
         # ctx segment reflects the token count (the bar replaced the "ctx" label).
         self.assertIn("60.5k", result.stdout)
+        # ...and the reading was published for the other terminals.
+        self.assertEqual(self.read_shared_cache(), {"v": 1, "rate_limits": {
+            "five_hour": {"used_percentage": 42.0, "resets_at": float(reset5)},
+            "seven_day": {"used_percentage": 12.0, "resets_at": float(reset7)},
+        }})
+
+    def test_current_usage_is_the_fallback_token_count(self):
+        result = self.run_statusline({
+            "context_window": {"current_usage": {
+                "input_tokens": 1000, "cache_creation_input_tokens": 2000,
+                "cache_read_input_tokens": 500}},
+            "model": {"display_name": "x"},
+        }, env_overrides={"STATUSLINE_CTX_BAR": "0"})
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("ctx 3.5k", result.stdout)
+
+
+class ImportTest(unittest.TestCase):
+    """ARCH-1: importing the script reads no stdin and prints nothing."""
+
+    def test_import_is_side_effect_free(self):
+        code = ("import sys; sys.path.insert(0, %r); import statusline; "
+                "print('imported', statusline.__version__)" % TOOL_DIR)
+        with tempfile.TemporaryDirectory() as home:
+            result = subprocess.run(
+                [sys.executable, "-c", code], input='{"model": {"display_name": "x"}}',
+                capture_output=True, text=True, timeout=30,
+                env=dict(os.environ, HOME=home, PYTHONDONTWRITEBYTECODE="1"),
+            )
+            self.assertEqual(os.listdir(home), [])  # nothing written either
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertRegex(result.stdout, r"^imported \S+\n$")
+
+
+class HostileNumberTest(StatuslineTestCase):
+    """SEC-2 / BUG-3: no number in the payload or the cache can crash the line."""
+
+    def _assert_renders(self, result):
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stderr, "", msg=result.stderr)
+        self.assertIn("\U0001f916", result.stdout)
+
+    def test_huge_integer_in_the_shared_cache(self):
+        os.makedirs(self.cache_dir)
+        with open(os.path.join(self.cache_dir, "shared-rate-limits.json"), "w") as f:
+            f.write('{"rate_limits": {"five_hour": {"used_percentage": %s, "resets_at": %s}}}'
+                    % ("9" * 400, "9" * 400))
+        reset5, _ = plausible_resets()
+        result = self.run_statusline({
+            "rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": reset5}},
+            "model": {"display_name": "x"}})
+        self._assert_renders(result)
+        self.assertIn("5h 42%", result.stdout)
+        # ...and the poison was overwritten, so it cannot crash anyone else.
+        self.assertEqual(self.read_shared_cache()["rate_limits"]["five_hour"]["used_percentage"], 42)
+
+    def test_huge_integers_in_the_payload(self):
+        big = "9" * 400
+        raw = ('{"context_window": {"total_input_tokens": %s, "used_percentage": %s},'
+               ' "rate_limits": {"five_hour": {"used_percentage": %s}},'
+               ' "cost": {"total_cost_usd": %s}, "model": {"display_name": "x"}}'
+               % (big, big, big, big))
+        self._assert_renders(self.run_statusline(raw))
+
+    def test_non_finite_or_non_numeric_context_figures(self):
+        for name, cw in {
+            "nan_total": '{"total_input_tokens": NaN}',
+            "huge_total": '{"total_input_tokens": 1e400}',
+            "string_part": '{"current_usage": {"input_tokens": "5"}}',
+            "infinite_window_pct": '{"total_input_tokens": 5000, "used_percentage": 1e999}',
+        }.items():
+            with self.subTest(context_window=name):
+                result = self.run_statusline('{"context_window": %s, "model": {"display_name": "x"}}' % cw)
+                self._assert_renders(result)
+                self.assertNotIn("inf", result.stdout)
+                self.assertNotIn("nan", result.stdout)
+
+    def test_bool_is_not_a_percentage(self):
+        result = self.run_statusline({
+            "rate_limits": {"five_hour": {"used_percentage": True}},
+            "model": {"display_name": "x"}})
+        self._assert_renders(result)
+        self.assertNotIn("5h", result.stdout)
 
 
 class ModelLabelInjectionTest(StatuslineTestCase):
@@ -208,11 +304,12 @@ class NonObjectJsonTest(StatuslineTestCase):
 
     def test_wellformed_payload_still_extracts_fields(self):
         # Guard against over-eager type checks discarding valid data.
+        reset5, reset7 = plausible_resets()
         payload = {
             "context_window": {"total_input_tokens": 60541, "used_percentage": 30},
             "rate_limits": {
-                "five_hour": {"used_percentage": 42, "resets_at": 9999999999},
-                "seven_day": {"used_percentage": 12, "resets_at": 9999999999},
+                "five_hour": {"used_percentage": 42, "resets_at": reset5},
+                "seven_day": {"used_percentage": 12, "resets_at": reset7},
             },
             "model": {"display_name": "Opus 4.8 (1M context)", "id": "claude-opus-4-8"},
         }
@@ -323,6 +420,86 @@ class SharedCachePoisonTest(StatuslineTestCase):
         self._assert_legit_won(self.run_statusline(self._legit_payload()))
 
 
+class SharedCacheFreshnessTest(StatuslineTestCase):
+    """TEST-3: a staler session never overwrites a fresher cache (the lock-free
+    sync's main promise), it renders the cache's numbers instead, marked ⇄."""
+
+    def _seed(self, rate_limits):
+        os.makedirs(self.cache_dir, exist_ok=True)
+        path = os.path.join(self.cache_dir, "shared-rate-limits.json")
+        with open(path, "w") as f:
+            json.dump({"rate_limits": rate_limits}, f)
+        with open(path, "rb") as f:
+            return path, f.read()
+
+    def _staler_run(self, cached, mine):
+        path, before = self._seed(cached)
+        result = self.run_statusline({"rate_limits": mine, "model": {"display_name": "x"}})
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before, "a staler session rewrote the cache")
+        return result.stdout
+
+    def test_higher_percentage_in_the_same_window_wins(self):
+        reset5, reset7 = plausible_resets()
+        out = self._staler_run(
+            {"five_hour": {"used_percentage": 40, "resets_at": reset5},
+             "seven_day": {"used_percentage": 10, "resets_at": reset7}},
+            {"five_hour": {"used_percentage": 12, "resets_at": reset5},
+             "seven_day": {"used_percentage": 10, "resets_at": reset7}})
+        self.assertIn("5h 40%", out)
+        self.assertNotIn("12%", out)
+        self.assertIn("⇄", out)
+
+    def test_later_reset_wins_even_with_a_lower_percentage(self):
+        # A new window (later resets_at) is newer data however low its %.
+        reset5, reset7 = plausible_resets()
+        out = self._staler_run(
+            {"five_hour": {"used_percentage": 2, "resets_at": reset5 + 3600}},
+            {"five_hour": {"used_percentage": 70, "resets_at": reset5}})
+        self.assertIn("5h 2%", out)
+        self.assertNotIn("70%", out)
+        self.assertIn("⇄", out)
+
+
+class SharedCacheFormatTest(StatuslineTestCase):
+    """PAR-3 / PAR-4: one precision on both sides of the sync, and the "v" field."""
+
+    def test_reading_is_normalised_before_compare_and_publish(self):
+        reset5, _ = plausible_resets()
+        self.run_statusline({"rate_limits": {"five_hour": {
+            "used_percentage": 23.46, "resets_at": reset5 + 0.4}}})
+        self.assertEqual(self.read_shared_cache()["rate_limits"]["five_hour"],
+                         {"used_percentage": 23.5, "resets_at": float(reset5)})
+
+    def test_the_same_reading_at_another_precision_is_not_fresher(self):
+        # What aware-mod publishes for the reading a script session sees as
+        # (23.46 %, resets_at + 0.4 s): neither side may beat the other with it.
+        reset5, _ = plausible_resets()
+        os.makedirs(self.cache_dir)
+        path = os.path.join(self.cache_dir, "shared-rate-limits.json")
+        with open(path, "w") as f:
+            json.dump({"v": 1, "rate_limits": {"five_hour": {"used_percentage": 23.5, "resets_at": reset5}}}, f)
+        with open(path, "rb") as f:
+            before = f.read()
+        result = self.run_statusline({"rate_limits": {"five_hour": {
+            "used_percentage": 23.46, "resets_at": reset5 + 0.4}}})
+        self.assertNotIn("⇄", result.stdout)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_v_and_unknown_fields_are_ignored_on_read(self):
+        # (A cache with no "v" at all is what every other test here seeds.)
+        reset5, _ = plausible_resets()
+        os.makedirs(self.cache_dir)
+        with open(os.path.join(self.cache_dir, "shared-rate-limits.json"), "w") as f:
+            json.dump({"v": 7, "extra": [1], "rate_limits": {"five_hour": {
+                "used_percentage": 50, "resets_at": reset5, "note": "x"}}}, f)
+        result = self.run_statusline({"model": {"display_name": "x"}})
+        self.assertIn("5h 50%", result.stdout)
+        self.assertIn("⇄", result.stdout)
+
+
 class CtxBarTest(StatuslineTestCase):
     """The ctx segment renders a fixed-width bar that tracks CTX_TARGET."""
 
@@ -346,8 +523,8 @@ class CtxBarTest(StatuslineTestCase):
         for tokens in (0, 1, 60000, 150000, 299999, 300000, 900000):
             with self.subTest(tokens=tokens):
                 out = self._ctx(tokens)
-                if tokens:
-                    self.assertEqual(out.count(self.BAR), 15)
+                # 0 tokens draws no ctx segment at all, so no bar.
+                self.assertEqual(out.count(self.BAR), 15 if tokens else 0)
 
     def test_bar_fill_tracks_target(self):
         # 20% of 300k -> 3 of 15 cells filled, i.e. 12 left in the faded colour.

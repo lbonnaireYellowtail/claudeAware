@@ -3,10 +3,12 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   DEFAULTS,
   buildLine,
+  carryLevels,
   configFrom,
   costTick,
   costWindowStart,
   fmtReset,
+  fmtTokens,
   fmtUsd,
   forgotten,
   fromEngine,
@@ -14,6 +16,7 @@ import {
   levelsOf,
   newAlerts,
   plainLine,
+  pyFixed,
   readableLedgers,
   sanitizeLabel,
   sanitizeLedger,
@@ -21,7 +24,7 @@ import {
   syncRateLimits,
   weeklyCost,
 } from '../hooks/core'
-import type { Snapshot } from '../hooks/core'
+import type { Levels, Snapshot } from '../hooks/core'
 
 const HOUR = 3600
 const DAY = 86400
@@ -104,6 +107,57 @@ describe('formatting', () => {
   test('malformed options fall back to the defaults', () => {
     expect(configFrom({ ctxTarget: 'lots', ctxBarCells: 900 })).toMatchObject({ ctxTarget: 100_000, ctxBarCells: 60 })
   })
+
+  test('a blank option is unset, as an empty env var is to the script', () => {
+    expect(configFrom({ warnPct: '', cautionPct: '  ', ctxTarget: ' 2000 ' })).toMatchObject({ warn: 85, caution: 60, ctxTarget: 2000 })
+  })
+
+  test('ctxBar as text follows the script off-list', () => {
+    for (const off of ['false', '0', 'no', ' OFF ']) expect(configFrom({ ctxBar: off }).ctxBar).toBe(false)
+    for (const on of ['true', '1', 'yes', '']) expect(configFrom({ ctxBar: on }).ctxBar).toBe(true)
+    expect(configFrom({ ctxBar: false }).ctxBar).toBe(false)
+    expect(configFrom({}).ctxBar).toBe(true)
+  })
+
+  test('non-finite context figures draw no ctx segment and no inf', () => {
+    for (const ctxTokens of [NaN, Infinity]) {
+      expect(plainLine(buildLine(snap({ ctxTokens }), DEFAULTS, NOW))).toMatch(/^🕐 5h 12%/)
+    }
+    expect(plainLine(buildLine(snap({ ctxPercent: Infinity }), DEFAULTS, NOW))).toMatch(/62\.7k \| 🕐/)
+    expect(levelsOf(snap({ ctxTokens: Infinity }), DEFAULTS).ctx).toBeUndefined()
+  })
+})
+
+describe('rounding (PAR-1): the script rounds half to even, so does the mod', () => {
+  test('exact ties go to the even neighbour', () => {
+    expect(pyFixed(12.5)).toBe('12')
+    expect(pyFixed(13.5)).toBe('14')
+    expect(pyFixed(0.125, 2)).toBe('0.12')
+    expect(pyFixed(62.25, 1)).toBe('62.2')
+    expect(pyFixed(0.5)).toBe('0')
+    expect(pyFixed(-0.5)).toBe('-0')
+  })
+
+  test('values that only look like ties round on their exact binary value', () => {
+    expect(pyFixed(60.55, 1)).toBe('60.5') // 60.54999...
+    expect(pyFixed(9.995, 2)).toBe('9.99') // 9.99499...
+    expect(pyFixed(2.675, 2)).toBe('2.67')
+    expect(pyFixed(84.4)).toBe('84')
+  })
+
+  test('tokens, dollars, gauges and the bar all use it', () => {
+    expect(fmtTokens(1250)).toBe('1.2k')
+    expect(fmtTokens(62_250)).toBe('62.2k')
+    expect(fmtUsd(12.5)).toBe('$12')
+    expect(fmtUsd(0.125)).toBe('$0.12')
+    expect(fmtUsd(9.995)).toBe('$9.99')
+    const line = buildLine(snap({ ctxPercent: 12.5, rl: { five_hour: { used_percentage: 84.5 } } }), DEFAULTS, NOW)
+    expect(plainLine(line)).toMatch(/\(12%\) \| 🕐 5h 84% \|/)
+    expect(line.anyWarn).toBe(false)
+    // 25 % of a 10-cell bar is 2.5 cells: 2, as in the script
+    const [ctx] = buildLine(snap({ ctxTokens: 25_000 }), configFrom({ ctxBarCells: 10 }), NOW).segments
+    expect(ctx!.filter(sp => sp.text.startsWith('▬')).map(sp => sp.text.length)).toEqual([2, 8])
+  })
 })
 
 describe('rate limits (CS-003 guards)', () => {
@@ -114,12 +168,46 @@ describe('rate limits (CS-003 guards)', () => {
     })
   })
 
-  test('poison is dropped: NaN, past or far-future resets, pct out of range', () => {
+  test('poison is dropped: NaN, far-future resets, pct out of range, bools', () => {
     expect(sanitizeRl({
       five_hour: { used_percentage: 250, resets_at: NOW + 7 * HOUR },
       seven_day: { used_percentage: NaN, resets_at: NOW + 3 * DAY },
     }, NOW)).toEqual({ five_hour: { used_percentage: 100 }, seven_day: { resets_at: NOW + 3 * DAY } })
+    expect(sanitizeRl({ five_hour: { used_percentage: true } }, NOW)).toEqual({})
     expect(sanitizeRl([1, 2], NOW)).toEqual({})
+  })
+
+  test('a passed reset means the window rolled over: 0 %, and when it rolled', () => {
+    expect(sanitizeRl({
+      five_hour: { used_percentage: 92, resets_at: NOW - 600 },
+      seven_day: { used_percentage: 40, resets_at: NOW - 9 * DAY },
+    }, NOW)).toEqual({
+      five_hour: { used_percentage: 0, rolled_at: NOW - 600 },
+      seven_day: { used_percentage: 0 }, // longer ago than the window is long
+    })
+    // idempotent: what was published reads back the same
+    const once = sanitizeRl({ five_hour: { used_percentage: 92, resets_at: NOW - 600 } }, NOW)
+    expect(sanitizeRl(once, NOW)).toEqual(once)
+    // a future rolled_at is not one
+    expect(sanitizeRl({ five_hour: { used_percentage: 7, rolled_at: NOW + 60 } }, NOW)).toEqual({ five_hour: { used_percentage: 7 } })
+  })
+
+  test('readings are normalised to one precision (PAR-3)', () => {
+    expect(sanitizeRl({ five_hour: { used_percentage: 23.46, resets_at: NOW + HOUR + 0.4 } }, NOW))
+      .toEqual({ five_hour: { used_percentage: 23.5, resets_at: NOW + HOUR } })
+    // the script's reading and the engine's of the same instant compare equal
+    const script = { rate_limits: { five_hour: { used_percentage: 23.5, resets_at: NOW + HOUR } } }
+    const engine = fromEngine([{ kind: 'five_hour', percentUsed: 23.5, resetsAt: new Date((NOW + HOUR + 0.4) * 1000).toISOString() }])
+    expect(syncRateLimits(engine, script, NOW)).toMatchObject({ fromShared: false, publish: null })
+  })
+
+  test('a live reading beats a rollover, which beats a % with no reset', () => {
+    const rolled = { rate_limits: { five_hour: { used_percentage: 0, rolled_at: NOW - 600 } } }
+    const live = { five_hour: { used_percentage: 3, resets_at: NOW + 4 * HOUR } }
+    expect(syncRateLimits(live, rolled, NOW)).toMatchObject({ fromShared: false, publish: live })
+    const stale = { rate_limits: { five_hour: { used_percentage: 92 } } }
+    expect(syncRateLimits({ five_hour: { used_percentage: 92, resets_at: NOW - 600 } }, stale, NOW))
+      .toMatchObject({ fromShared: false, publish: { five_hour: { used_percentage: 0, rolled_at: NOW - 600 } } })
   })
 
   test('the fresher cache wins and is rendered as shared', () => {
@@ -149,7 +237,7 @@ describe('rate limits (CS-003 guards)', () => {
 
 describe('cost ledger (ADR-0003)', () => {
   test('a first sighting counts the whole total', () => {
-    expect(costTick(undefined, 2.5, NOW)).toEqual({ last_total: 2.5, seen: NOW, buckets: { [CUR_H]: 2.5 } })
+    expect(costTick(undefined, 2.5, NOW)).toEqual({ v: 1, last_total: 2.5, seen: NOW, buckets: { [CUR_H]: 2.5 } })
   })
 
   test('only growth counts; a lower total does not move the baseline', () => {
@@ -179,6 +267,12 @@ describe('cost ledger (ADR-0003)', () => {
     expect(weeklyCost(ledgers, NOW)).toBe(675)
   })
 
+  test('a rolled-over week counts from the reset it passed', () => {
+    const ledgers = [{ last_total: 600, buckets: { [CUR_H - 48]: 555, [CUR_H - 2]: 45 } }]
+    const rl = sanitizeRl({ seven_day: { used_percentage: 91, resets_at: NOW - DAY } }, NOW)
+    expect(weeklyCost(ledgers, NOW, costWindowStart(rl, NOW))).toBe(45)
+  })
+
   test('stale, oversized and non-json files are skipped unread', () => {
     const fresh = (NOW - HOUR) * 1000
     expect(readableLedgers([
@@ -186,19 +280,24 @@ describe('cost ledger (ADR-0003)', () => {
       { name: 'b.json', mtimeMs: (NOW - 9 * DAY) * 1000, size: 400 },
       { name: 'c.json', mtimeMs: fresh, size: 100_000 },
       { name: 'd.json.123.tmp', mtimeMs: fresh, size: 400 },
+      { name: 'e.json', mtimeMs: fresh, size: 400, isLink: true },
     ], NOW).map(f => f.name)).toEqual(['a.json'])
   })
 })
 
 describe('ledger lifecycle', () => {
-  test('only bare names past 30 days are forgotten', () => {
+  test('only ledger names past 30 days are forgotten, never a symlink', () => {
     const old = (NOW - 31 * DAY) * 1000
     expect(forgotten([
       { name: 'a.json', mtimeMs: old, size: 1 },
+      { name: 'a.json.4242.tmp', mtimeMs: old, size: 1 },
       { name: 'b.json', mtimeMs: (NOW - 29 * DAY) * 1000, size: 1 },
       { name: '-rf', mtimeMs: old, size: 1 },
       { name: '../x.json', mtimeMs: old, size: 1 },
-    ], NOW)).toEqual(['a.json'])
+      { name: 'thesis.docx', mtimeMs: old, size: 1 },
+      { name: 'notes.json.bak', mtimeMs: old, size: 1 },
+      { name: 'link.json', mtimeMs: old, size: 1, isLink: true },
+    ], NOW)).toEqual(['a.json', 'a.json.4242.tmp'])
   })
 })
 
@@ -214,5 +313,18 @@ describe('alerts', () => {
   test('a reading borrowed from another session does not toast', () => {
     const borrowed = snap({ fromShared: true, rl: { five_hour: { used_percentage: 95 } } })
     expect(levelsOf(borrowed, DEFAULTS).five_hour).toBeUndefined()
+  })
+
+  test('sessions taking turns toast once, not on every own reading (BUG-2)', () => {
+    const reset = NOW + HOUR + 20 * 60 + 5
+    let was: Levels = {}
+    const toasts: string[] = []
+    for (const [pct, fromShared] of [[88, false], [89, true], [90, false], [91, true], [92, false]] as const) {
+      const s = snap({ fromShared, rl: { five_hour: { used_percentage: pct, resets_at: reset } } })
+      const is = carryLevels(was, levelsOf(s, DEFAULTS), s)
+      toasts.push(...newAlerts(was, is, s, NOW))
+      was = is
+    }
+    expect(toasts).toEqual(['5h limit at 88%, resets →1h20m'])
   })
 })
