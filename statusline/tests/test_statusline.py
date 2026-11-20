@@ -386,6 +386,9 @@ class SharedCachePoisonTest(StatuslineTestCase):
         self.assertEqual(
             cache["rate_limits"]["five_hour"]["used_percentage"], 42
         )
+        # The seeded Fable window went with the poison: not drawn, not kept.
+        self.assertNotIn("fable", result.stdout)
+        self.assertNotIn("seven_day_overage_included", cache["rate_limits"])
 
     def test_poisoned_percentage_is_overwritten(self):
         # Each poison pairs a far-future resets_at with a bad percentage — the
@@ -395,6 +398,7 @@ class SharedCachePoisonTest(StatuslineTestCase):
                 self._seed_cache({
                     "five_hour": {"used_percentage": bad_pct, "resets_at": self._FAR_FUTURE},
                     "seven_day": {"used_percentage": bad_pct, "resets_at": self._FAR_FUTURE},
+                    "seven_day_overage_included": {"used_percentage": bad_pct, "resets_at": self._FAR_FUTURE},
                 })
                 self._assert_legit_won(self.run_statusline(self._legit_payload()))
 
@@ -404,6 +408,7 @@ class SharedCachePoisonTest(StatuslineTestCase):
         self._seed_cache({
             "five_hour": {"used_percentage": 99, "resets_at": self._FAR_FUTURE},
             "seven_day": {"used_percentage": 99, "resets_at": self._FAR_FUTURE},
+            "seven_day_overage_included": {"used_percentage": 99, "resets_at": self._FAR_FUTURE},
         })
         self._assert_legit_won(self.run_statusline(self._legit_payload()))
 
@@ -416,6 +421,7 @@ class SharedCachePoisonTest(StatuslineTestCase):
         self._seed_cache({
             "five_hour": {"used_percentage": 100, "resets_at": twenty_days},
             "seven_day": {"used_percentage": 100, "resets_at": twenty_days},
+            "seven_day_overage_included": {"used_percentage": 100, "resets_at": twenty_days},
         })
         self._assert_legit_won(self.run_statusline(self._legit_payload()))
 

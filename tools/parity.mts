@@ -118,6 +118,28 @@ const CASES: Case[] = [
     },
   },
   {
+    name: 'Fable window only in the shared cache: it breaks the tie, drawn with ⇄',
+    ctx: 40_000, pct: 4, model: 'Opus 5', cost: 1,
+    rl: { five_hour: { pct: 30, resetIn: 2 * HOUR }, seven_day: { pct: 22, resetIn: 4 * DAY } },
+    seed: {
+      shared: {
+        five_hour: { pct: 30, resetIn: 2 * HOUR },
+        seven_day: { pct: 22, resetIn: 4 * DAY },
+        seven_day_overage_included: { pct: 41, resetIn: 4 * DAY },
+      },
+    },
+  },
+  {
+    name: 'Fable window only in this reading, shared cache fresher on 5h: shared wins, no fable',
+    ctx: 40_000, pct: 4, model: 'Fable 5.2', cost: 1,
+    rl: {
+      five_hour: { pct: 30, resetIn: 2 * HOUR },
+      seven_day: { pct: 22, resetIn: 4 * DAY },
+      seven_day_overage_included: { pct: 41, resetIn: 4 * DAY },
+    },
+    seed: { shared: { five_hour: { pct: 31, resetIn: 2 * HOUR }, seven_day: { pct: 22, resetIn: 4 * DAY } } },
+  },
+  {
     name: '.5 ties: %, (N%), tokens, $ tail and bar fill (half to even)',
     ctx: 1250, pct: 12.5, model: 'Opus 5', cost: 0.125,
     rl: { five_hour: { pct: 62.5, resetIn: HOUR }, seven_day: { pct: 84.5, resetIn: 5 * DAY } },
@@ -142,7 +164,11 @@ const CASES: Case[] = [
   {
     name: 'windows rolled over since the reading: 0 %, $ from the old reset',
     ctx: 40_000, pct: 4, model: 'Opus 5', cost: 0.5,
-    rl: { five_hour: { pct: 92, resetIn: -600 }, seven_day: { pct: 40, resetIn: -DAY } },
+    rl: {
+      five_hour: { pct: 92, resetIn: -600 },
+      seven_day: { pct: 40, resetIn: -DAY },
+      seven_day_overage_included: { pct: 70, resetIn: -DAY },
+    },
     seed: { ledgers: { earlier: { buckets: { 2: 10, 48: 90 } } } },
   },
   {

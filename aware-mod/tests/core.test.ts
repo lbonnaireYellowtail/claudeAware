@@ -226,6 +226,16 @@ describe('rate limits (CS-003 guards)', () => {
     const mine = { five_hour: { used_percentage: 20, resets_at: NOW + HOUR } }
     const poison = { rate_limits: { five_hour: { used_percentage: 100, resets_at: NOW + 20 * DAY } } }
     expect(syncRateLimits(mine, poison, NOW)).toMatchObject({ fromShared: false, publish: mine })
+    const fablePoison = {
+      rate_limits: {
+        five_hour: { used_percentage: 20, resets_at: NOW + HOUR },
+        seven_day_overage_included: { used_percentage: 1e308, resets_at: NOW + 20 * DAY },
+      },
+    }
+    // Clamped to 100 % and its reset dropped: it can win a tie, never pin an alarm.
+    expect(syncRateLimits(mine, fablePoison, NOW).rl.seven_day_overage_included).toEqual({ used_percentage: 100 })
+    const fableNaN = { rate_limits: { ...mine, seven_day_overage_included: { used_percentage: NaN, resets_at: Infinity } } }
+    expect(syncRateLimits(mine, fableNaN, NOW)).toEqual({ rl: mine, fromShared: false, publish: null })
   })
 
   test('API-key mode needs spend and no sane rate limits', () => {
@@ -251,11 +261,17 @@ describe('rate limits (CS-003 guards)', () => {
   })
 
   test('the Fable window ranks last: it breaks a tie, never outranks 5h or 7d', () => {
-    const base = { five_hour: { used_percentage: 20, resets_at: NOW + HOUR } }
+    const base = {
+      five_hour: { used_percentage: 20, resets_at: NOW + HOUR },
+      seven_day: { used_percentage: 10, resets_at: NOW + 2 * DAY },
+    }
     const fable = { seven_day_overage_included: { used_percentage: 34, resets_at: NOW + 3 * DAY } }
-    expect(syncRateLimits({ ...base, ...fable }, { rate_limits: base }, NOW).publish).toEqual({ ...base, ...fable })
-    const fresher = { five_hour: { used_percentage: 21, resets_at: NOW + HOUR } }
-    expect(syncRateLimits({ ...base, ...fable }, { rate_limits: fresher }, NOW)).toMatchObject({ fromShared: true, rl: fresher })
+    const mine = { ...base, ...fable }
+    expect(syncRateLimits(mine, { rate_limits: base }, NOW)).toEqual({ rl: mine, fromShared: false, publish: mine })
+    const fresher5h = { ...base, five_hour: { used_percentage: 21, resets_at: NOW + HOUR } }
+    expect(syncRateLimits(mine, { rate_limits: fresher5h }, NOW)).toEqual({ rl: fresher5h, fromShared: true, publish: null })
+    const fresher7d = { ...base, seven_day: { used_percentage: 11, resets_at: NOW + 2 * DAY } }
+    expect(syncRateLimits(mine, { rate_limits: fresher7d }, NOW)).toEqual({ rl: fresher7d, fromShared: true, publish: null })
   })
 })
 

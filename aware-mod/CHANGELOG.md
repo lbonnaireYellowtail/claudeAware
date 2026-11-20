@@ -48,7 +48,7 @@ Versions follow [semver](https://semver.org) and match `version` in
   drawn after it as `📖 fable 34% →3d0h`. As of Claude Code 2.1.329 `$.session.usage()` carries no
   such window (only `/usage` shows the Fable limit), so nothing changes on the line until
   it does. The key is the name Claude Code itself gives the Fable limit in its rate-limit
-  types; a feed that names it differently needs a one-line change.
+  types.
 - The pure tests (`tests/core.test.ts`) also run on plain Node
   (`node --experimental-strip-types tools/core-tests/run.mjs`).
 - Engine-level tests for overlapping refreshes, symlinked cache files, the sweep's

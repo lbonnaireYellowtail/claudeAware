@@ -51,7 +51,7 @@ Releases up to 1.4.0 are tagged `v<version>`; later ones `statusline-v<version>`
   drawn after it as `📖 fable 34% →3d0h`. As of Claude Code 2.1.329 the stdin payload carries no
   such window (only `/usage` shows the Fable limit), so nothing changes on the line until
   it does. The key is the name Claude Code itself gives the Fable limit in its rate-limit
-  types; a feed that names it differently needs a one-line change.
+  types.
 - Regression tests for all of the above, a test that a staler session never overwrites
   a fresher shared cache, and coverage for the `current_usage` fallback and the
   countdown / publish path. `test_cost_ledger.py` run directly no longer skips its last

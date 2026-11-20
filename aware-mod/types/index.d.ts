@@ -3,7 +3,7 @@
  * `rolled_at`: the reset a rolled-over window passed (docs/cache-format.md).
  */
 export type RlWindow = { used_percentage?: number; resets_at?: number; rolled_at?: number }
-/** `seven_day_overage_included`: the Fable-only weekly window (Claude Code's own name), drawn once a feed reports it. */
+/** `seven_day_overage_included`: the Fable-only weekly window (Claude Code's own name); optional. */
 export type RateLimits = { five_hour?: RlWindow; seven_day?: RlWindow; seven_day_overage_included?: RlWindow }
 
 /** What one refresh measured; the line is drawn from it at render time. */
