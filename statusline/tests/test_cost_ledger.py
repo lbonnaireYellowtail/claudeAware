@@ -536,6 +536,38 @@ class RolledOverWindowTest(LedgerTestCase):
         self.assertEqual(self.read_shared_cache()["rate_limits"]["five_hour"]["used_percentage"], 0)
 
 
+class FableWindowTest(LedgerTestCase):
+    """The Fable-only weekly window, for when the payload carries one."""
+
+    def test_fable_window_draws_after_7d_and_is_published(self):
+        now = int(time.time())
+        r = self.tick("fable", 1.0, rate_limits={
+            "five_hour": {"used_percentage": 42, "resets_at": now + HOUR},
+            "seven_day": {"used_percentage": 12, "resets_at": now + 3 * DAY + 30},
+            "seven_day_overage_included": {"used_percentage": 34, "resets_at": now + 3 * DAY + 30},
+            "seven_day_opus": {"used_percentage": 50, "resets_at": now + 3 * DAY},
+        })
+        out = plain(r)
+        self.assertRegex(out, r"📅 7d 12% →3d0h \$1\.00 \| 📖 fable 34% →3d0h \| 🤖")
+        shared = self.read_shared_cache()["rate_limits"]
+        self.assertEqual(shared["seven_day_overage_included"],
+                         {"used_percentage": 34.0, "resets_at": float(now + 3 * DAY + 30)})
+        self.assertNotIn("seven_day_opus", shared)
+
+    def test_fable_window_gets_the_same_guards(self):
+        now = int(time.time())
+        r = self.tick("fable", 1.0, rate_limits={
+            "five_hour": {"used_percentage": 42, "resets_at": now + HOUR},
+            "seven_day_overage_included": {"used_percentage": 250, "resets_at": now + 20 * DAY},
+        })
+        self.assertIn("📖 fable 100% | ", plain(r))  # clamped, poison reset dropped
+        self.assertEqual(self.read_shared_cache()["rate_limits"]["seven_day_overage_included"],
+                         {"used_percentage": 100.0})
+
+    def test_no_fable_window_leaves_the_line_as_it_was(self):
+        self.assertNotIn("fable", plain(self.tick("plain", 1.0, rate_limits=self.rl())))
+
+
 class LedgerSafetyTest(LedgerTestCase):
     """SEC-1 / SEC-2: the sweep stays in its own folder; huge numbers don't crash."""
 

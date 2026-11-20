@@ -13,6 +13,9 @@ time:
   `🧠 ctx 62.7k (6%)` label instead.
 - **🕐 5h / 📅 7d** — your actual Anthropic rate-limit usage, with time-until-reset —
   **kept in sync across all your open terminals** (see below).
+- **📖 fable** — the Fable-only weekly limit, drawn after `7d` when Claude Code reports
+  one. As of Claude Code 2.1.329 neither the statusline payload nor the mod API carries
+  it (only `/usage` does), so the gauge stays hidden until one of them does.
 - **$35** — what this plan week's sessions on this machine would cost at API list
   price (see [Weekly cost](#weekly-cost)). API-key users get `💵 sess $1.20 | 7d $35`
   in place of the plan gauges.
@@ -281,7 +284,7 @@ before the split) and `aware-mod-v<version>`.
 ## Development
 
 ```bash
-python3 -m unittest discover -s statusline/tests        # statusline: 80 tests
+python3 -m unittest discover -s statusline/tests        # statusline: 83 tests
 node --experimental-strip-types tools/core-tests/run.mjs # aware-mod's pure tests, plain Node
 claude plugin validate aware-mod && claude plugin test aware-mod   # + the engine-level tests
 claude plugin validate .                                 # the marketplace

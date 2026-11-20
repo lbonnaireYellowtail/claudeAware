@@ -233,6 +233,30 @@ describe('rate limits (CS-003 guards)', () => {
     expect(isApiKeyMode(0, {}, NOW)).toBe(false)
     expect(isApiKeyMode(1, { five_hour: { used_percentage: 3 } }, NOW)).toBe(false)
   })
+
+  test('the Fable weekly window: read from the engine, guarded and drawn like the others', () => {
+    const at = new Date((NOW + 3 * DAY) * 1000).toISOString()
+    const engine = fromEngine([
+      { kind: 'seven_day_overage_included', percentUsed: 34, resetsAt: at },
+      { kind: 'seven_day_opus', percentUsed: 50, resetsAt: at },
+    ])
+    expect(engine).toEqual({ seven_day_overage_included: { used_percentage: 34, resets_at: NOW + 3 * DAY } })
+    // Same guards: clamped, a reset past the 8-day horizon is dropped.
+    expect(sanitizeRl({ seven_day_overage_included: { used_percentage: 250, resets_at: NOW + 20 * DAY } }, NOW))
+      .toEqual({ seven_day_overage_included: { used_percentage: 100 } })
+    const s = snap({ fromShared: true, weekUsd: null, rl: { ...snap().rl, ...engine } })
+    expect(plainLine(buildLine(s, DEFAULTS, NOW))).toMatch(/\| 📅 7d 10% →2d5h \| 📖 fable 34% →3d0h ⇄ \| 🤖/)
+    // No Fable reading: the line is the one it was.
+    expect(plainLine(buildLine(snap(), DEFAULTS, NOW))).not.toMatch(/fable/)
+  })
+
+  test('the Fable window ranks last: it breaks a tie, never outranks 5h or 7d', () => {
+    const base = { five_hour: { used_percentage: 20, resets_at: NOW + HOUR } }
+    const fable = { seven_day_overage_included: { used_percentage: 34, resets_at: NOW + 3 * DAY } }
+    expect(syncRateLimits({ ...base, ...fable }, { rate_limits: base }, NOW).publish).toEqual({ ...base, ...fable })
+    const fresher = { five_hour: { used_percentage: 21, resets_at: NOW + HOUR } }
+    expect(syncRateLimits({ ...base, ...fable }, { rate_limits: fresher }, NOW)).toMatchObject({ fromShared: true, rl: fresher })
+  })
 })
 
 describe('cost ledger (ADR-0003)', () => {
@@ -326,5 +350,10 @@ describe('alerts', () => {
       was = is
     }
     expect(toasts).toEqual(['5h limit at 88%, resets →1h20m'])
+  })
+
+  test('the Fable weekly window toasts under its own label', () => {
+    const hot = snap({ rl: { seven_day_overage_included: { used_percentage: 90, resets_at: NOW + 2 * DAY + 5 } } })
+    expect(newAlerts({}, levelsOf(hot, DEFAULTS), hot, NOW)).toEqual(['fable limit at 90%, resets →2d0h'])
   })
 })

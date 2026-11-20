@@ -47,7 +47,7 @@ const at = (secs: number) => now + secs + 30
 const iso = (epoch: number) => new Date(epoch * 1000).toISOString()
 
 type Win = { pct: number; resetIn?: number } // resetIn: seconds from now, negative once passed
-type Windows = { five_hour?: Win; seven_day?: Win }
+type Windows = { five_hour?: Win; seven_day?: Win; seven_day_overage_included?: Win }
 type Engine = { kind: string; percentUsed: number; resetsAt?: string }[]
 
 type Case = {
@@ -107,6 +107,15 @@ const CASES: Case[] = [
     name: 'subscriber with spend publishes its reading; ctx past the target',
     ctx: 120_000, pct: 12, model: 'Opus 5', cost: 4.2,
     rl: { five_hour: { pct: 42, resetIn: 2 * HOUR }, seven_day: { pct: 12, resetIn: 3 * DAY + 4 * HOUR } },
+  },
+  {
+    name: 'Fable weekly window: drawn after 7d, published, warn band',
+    ctx: 40_000, pct: 4, model: 'Fable 5.2', cost: 3,
+    rl: {
+      five_hour: { pct: 30, resetIn: 2 * HOUR },
+      seven_day: { pct: 22, resetIn: 4 * DAY },
+      seven_day_overage_included: { pct: 88, resetIn: 4 * DAY },
+    },
   },
   {
     name: '.5 ties: %, (N%), tokens, $ tail and bar fill (half to even)',

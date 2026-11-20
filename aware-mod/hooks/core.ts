@@ -107,9 +107,26 @@ export const pyRound = (x: number, digits = 0): number => (Number.isFinite(x) ? 
 
 // ---- rate limits: sanitize, freshness, sync (CS-003) ------------------------
 
-const WINDOWS = ['five_hour', 'seven_day'] as const
+// `seven_day_overage_included` is the Fable-only weekly window: the name
+// Claude Code itself gives it in its rate-limit types, where it is labelled
+// "Fable limit". Claude Code 2.1.329 feeds neither tool one (only /usage has
+// it), so the gauge draws once a feed reports it. Last in the list: the
+// freshness key of a reading without one is unchanged.
+const WINDOWS = ['five_hour', 'seven_day', 'seven_day_overage_included'] as const
+type WindowKey = (typeof WINDOWS)[number]
+const isWindowKey = (k: string): k is WindowKey => (WINDOWS as readonly string[]).includes(k)
 // A rolling window can never reset further out than its own length (+ slack).
-const RESET_HORIZON = { five_hour: 6 * 3600, seven_day: 8 * 24 * 3600 }
+const RESET_HORIZON = {
+  five_hour: 6 * 3600,
+  seven_day: 8 * 24 * 3600,
+  seven_day_overage_included: 8 * 24 * 3600,
+}
+// How each window is drawn, in line order: icon, label.
+const GAUGES = [
+  ['five_hour', '\u{1f550}', '5h'],
+  ['seven_day', '\u{1f4c5}', '7d'],
+  ['seven_day_overage_included', '\u{1f4d6}', 'fable'],
+] as const
 
 /** Engine readings (`percentUsed`, ISO `resetsAt`) into the cache's spelling. */
 export function fromEngine(
@@ -117,7 +134,7 @@ export function fromEngine(
 ): RateLimits {
   const out: RateLimits = {}
   for (const r of rateLimits) {
-    if (r.kind !== 'five_hour' && r.kind !== 'seven_day') continue
+    if (!isWindowKey(r.kind)) continue
     const win: RlWindow = { used_percentage: r.percentUsed }
     const at = r.resetsAt === undefined ? NaN : Date.parse(r.resetsAt) / 1000
     if (Number.isFinite(at)) win.resets_at = at
@@ -381,10 +398,7 @@ export function buildLine(s: Snapshot, cfg: Config, now: number): Line {
   }
 
   let usedRl = false
-  for (const [key, icon, label] of [
-    ['five_hour', '\u{1f550}', '5h'],
-    ['seven_day', '\u{1f4c5}', '7d'],
-  ] as const) {
+  for (const [key, icon, label] of GAUGES) {
     const win = s.rl[key]
     if (!isFiniteNumber(win?.used_percentage)) continue
     const pct = win.used_percentage
@@ -460,8 +474,8 @@ export function newAlerts(prev: Levels, next: Levels, s: Snapshot, now: number):
     if (key === 'ctx') out.push(`Context at ${fmtTokens(s.ctxTokens ?? 0)}: past your target, consider /compact or a fresh session`)
     else if (key === 'week_usd') out.push(`Weekly spend at ${fmtUsd(s.weekUsd ?? 0)}: near your budget`)
     else {
-      const win = s.rl[key as 'five_hour' | 'seven_day']
-      const label = key === 'five_hour' ? '5h' : '7d'
+      const win = s.rl[key as WindowKey]
+      const label = GAUGES.find(g => g[0] === key)?.[2] ?? key
       const reset = fmtReset(win?.resets_at, now)
       out.push(`${label} limit at ${pyFixed(win?.used_percentage ?? 0, 0)}%${reset ? `, resets ${reset}` : ''}`)
     }
