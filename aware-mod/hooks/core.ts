@@ -107,9 +107,21 @@ export const pyRound = (x: number, digits = 0): number => (Number.isFinite(x) ? 
 
 // ---- rate limits: sanitize, freshness, sync (CS-003) ------------------------
 
-const WINDOWS = ['five_hour', 'seven_day'] as const
-// A rolling window can never reset further out than its own length (+ slack).
-const RESET_HORIZON = { five_hour: 6 * 3600, seven_day: 8 * 24 * 3600 }
+// The windows, in freshness-key and line order: each one's reset horizon (a
+// rolling window can never reset further out than its own length, + slack)
+// and the icon and label it is drawn with. `seven_day_overage_included` is the
+// Fable-only weekly window, under Claude Code's own name for it; it is
+// optional and drawn only when a feed reports it. Last in the list: the
+// freshness key of a reading without one is unchanged. Same table as
+// _WINDOWS in statusline.py.
+const WINDOWS = {
+  five_hour: { horizon: 6 * 3600, icon: '\u{1f550}', label: '5h' },
+  seven_day: { horizon: 8 * 24 * 3600, icon: '\u{1f4c5}', label: '7d' },
+  seven_day_overage_included: { horizon: 8 * 24 * 3600, icon: '\u{1f4d6}', label: 'fable' },
+} as const
+type WindowKey = keyof typeof WINDOWS
+const WINDOW_KEYS = Object.keys(WINDOWS) as WindowKey[]
+const isWindowKey = (k: string): k is WindowKey => Object.hasOwn(WINDOWS, k)
 
 /** Engine readings (`percentUsed`, ISO `resetsAt`) into the cache's spelling. */
 export function fromEngine(
@@ -117,7 +129,7 @@ export function fromEngine(
 ): RateLimits {
   const out: RateLimits = {}
   for (const r of rateLimits) {
-    if (r.kind !== 'five_hour' && r.kind !== 'seven_day') continue
+    if (!isWindowKey(r.kind)) continue
     const win: RlWindow = { used_percentage: r.percentUsed }
     const at = r.resetsAt === undefined ? NaN : Date.parse(r.resetsAt) / 1000
     if (Number.isFinite(at)) win.resets_at = at
@@ -141,10 +153,10 @@ const wholeSeconds = (v: unknown): number | undefined => (isFiniteNumber(v) ? py
 export function sanitizeRl(rl: unknown, now: number): RateLimits {
   const out: RateLimits = {}
   if (!isRecord(rl)) return out
-  for (const w of WINDOWS) {
+  for (const w of WINDOW_KEYS) {
     const win = rl[w]
     if (!isRecord(win)) continue
-    const horizon = RESET_HORIZON[w]
+    const { horizon } = WINDOWS[w]
     let clean: RlWindow = {}
     const pct = win.used_percentage
     if (isFiniteNumber(pct)) clean.used_percentage = pyRound(Math.max(0, Math.min(100, pct)), 1)
@@ -172,7 +184,7 @@ export function sanitizeRl(rl: unknown, now: number): RateLimits {
  */
 export function rlFreshness(rl: RateLimits): number[] {
   const key: number[] = []
-  for (const w of WINDOWS) {
+  for (const w of WINDOW_KEYS) {
     const win = rl[w] ?? {}
     key.push(win.resets_at ?? win.rolled_at ?? -1, win.used_percentage ?? -1)
   }
@@ -381,10 +393,8 @@ export function buildLine(s: Snapshot, cfg: Config, now: number): Line {
   }
 
   let usedRl = false
-  for (const [key, icon, label] of [
-    ['five_hour', '\u{1f550}', '5h'],
-    ['seven_day', '\u{1f4c5}', '7d'],
-  ] as const) {
+  for (const key of WINDOW_KEYS) {
+    const { icon, label } = WINDOWS[key]
     const win = s.rl[key]
     if (!isFiniteNumber(win?.used_percentage)) continue
     const pct = win.used_percentage
@@ -426,7 +436,7 @@ export function levelsOf(s: Snapshot, cfg: Config): Levels {
   if (isFiniteNumber(s.ctxTokens) && s.ctxTokens && cfg.ctxTarget > 0) {
     out.ctx = level((s.ctxTokens / cfg.ctxTarget) * 100)
   }
-  for (const key of WINDOWS) {
+  for (const key of WINDOW_KEYS) {
     const pct = s.rl[key]?.used_percentage
     if (isFiniteNumber(pct) && !s.fromShared) out[key] = level(pct)
   }
@@ -445,7 +455,7 @@ export function levelsOf(s: Snapshot, cfg: Config): Levels {
 export function carryLevels(was: Levels, is: Levels, s: Snapshot): Levels {
   if (!s.fromShared) return is
   const out: Levels = { ...is }
-  for (const key of WINDOWS) {
+  for (const key of WINDOW_KEYS) {
     const prev = was[key]
     if (prev !== undefined && out[key] === undefined) out[key] = prev
   }
@@ -460,8 +470,8 @@ export function newAlerts(prev: Levels, next: Levels, s: Snapshot, now: number):
     if (key === 'ctx') out.push(`Context at ${fmtTokens(s.ctxTokens ?? 0)}: past your target, consider /compact or a fresh session`)
     else if (key === 'week_usd') out.push(`Weekly spend at ${fmtUsd(s.weekUsd ?? 0)}: near your budget`)
     else {
-      const win = s.rl[key as 'five_hour' | 'seven_day']
-      const label = key === 'five_hour' ? '5h' : '7d'
+      const win = s.rl[key as WindowKey]
+      const { label } = WINDOWS[key as WindowKey]
       const reset = fmtReset(win?.resets_at, now)
       out.push(`${label} limit at ${pyFixed(win?.used_percentage ?? 0, 0)}%${reset ? `, resets ${reset}` : ''}`)
     }

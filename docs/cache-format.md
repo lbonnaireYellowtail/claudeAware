@@ -45,21 +45,27 @@ The freshest account-level rate limits any session on this machine has seen.
 
 | Field | Unit | Guard (read and write) |
 | --- | --- | --- |
-| `rate_limits.five_hour`, `rate_limits.seven_day` | object | any other key is ignored; a non-object is no window |
+| `rate_limits.five_hour`, `rate_limits.seven_day`, `rate_limits.seven_day_overage_included` | object | any other key is ignored; a non-object is no window. `seven_day_overage_included` (the Fable-only weekly window, under Claude Code's own name for it) is optional, and a reader from before it existed ignores it |
 | `used_percentage` | % of the plan's limit | finite number (not a bool), clamped to `[0, 100]`, rounded to 1 decimal, half to even |
-| `resets_at` | epoch seconds | finite, rounded to whole seconds (half to even); kept if `now ≤ resets_at ≤ now + horizon`, where the horizon is 6 h for `five_hour` and 8 d for `seven_day`. Further out it is poison: dropped, the % kept. Already passed: the window rolled over (next row) |
+| `resets_at` | epoch seconds | finite, rounded to whole seconds (half to even); kept if `now ≤ resets_at ≤ now + horizon`, where the horizon is 6 h for `five_hour` and 8 d for `seven_day` and `seven_day_overage_included`. Further out it is poison: dropped, the % kept. Already passed: the window rolled over (next row) |
 | `rolled_at` | epoch seconds | the reset a rolled-over window passed, i.e. when the current window started. Only ever with `used_percentage: 0`. Kept if `now − horizon ≤ rolled_at < now`; an older rollover is just `used_percentage: 0` |
 
 Rounding both tools to one precision is what lets the same reading, taken by the script
 from its stdin payload and by the mod from the engine (`percentUsed`, an ISO
 `resetsAt`), compare as equal instead of one side always winning.
 
-**Freshness.** Per window, in order `five_hour` then `seven_day`: (`resets_at`, else
+**Freshness.** Per window, in order `five_hour`, `seven_day`, then `seven_day_overage_included`: (`resets_at`, else
 `rolled_at`, else −1; `used_percentage`, else −1), compared lexicographically. Within
 an account neither number ever goes down, so a session writes the file only when its
 sanitized reading is strictly fresher than the sanitized file, and renders the file
 (marked `⇄`) when the file is fresher. A rolled-over window ranks below any live
 reading (its instant is past) and above a window with no reset.
+
+`seven_day_overage_included` is last in the key, so it only breaks a tie on the other
+two windows. A reading without it that is fresher on `five_hour` or `seven_day` still
+wins and replaces a file that held it: the Fable gauge then leaves every session until
+a reading that has it is the freshest again. That happens while one feed, or an older
+version of one tool, reports the window and the other does not.
 
 **Writers.** The script writes a temp file and renames it over the old one. The mod
 writes in place (the mod file API has no rename), so a reader can catch a half-written

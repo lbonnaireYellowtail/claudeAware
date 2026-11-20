@@ -226,12 +226,52 @@ describe('rate limits (CS-003 guards)', () => {
     const mine = { five_hour: { used_percentage: 20, resets_at: NOW + HOUR } }
     const poison = { rate_limits: { five_hour: { used_percentage: 100, resets_at: NOW + 20 * DAY } } }
     expect(syncRateLimits(mine, poison, NOW)).toMatchObject({ fromShared: false, publish: mine })
+    const fablePoison = {
+      rate_limits: {
+        five_hour: { used_percentage: 20, resets_at: NOW + HOUR },
+        seven_day_overage_included: { used_percentage: 1e308, resets_at: NOW + 20 * DAY },
+      },
+    }
+    // Clamped to 100 % and its reset dropped: it can win a tie, never pin an alarm.
+    expect(syncRateLimits(mine, fablePoison, NOW).rl.seven_day_overage_included).toEqual({ used_percentage: 100 })
+    const fableNaN = { rate_limits: { ...mine, seven_day_overage_included: { used_percentage: NaN, resets_at: Infinity } } }
+    expect(syncRateLimits(mine, fableNaN, NOW)).toEqual({ rl: mine, fromShared: false, publish: null })
   })
 
   test('API-key mode needs spend and no sane rate limits', () => {
     expect(isApiKeyMode(1, {}, NOW)).toBe(true)
     expect(isApiKeyMode(0, {}, NOW)).toBe(false)
     expect(isApiKeyMode(1, { five_hour: { used_percentage: 3 } }, NOW)).toBe(false)
+  })
+
+  test('the Fable weekly window: read from the engine, guarded and drawn like the others', () => {
+    const at = new Date((NOW + 3 * DAY) * 1000).toISOString()
+    const engine = fromEngine([
+      { kind: 'seven_day_overage_included', percentUsed: 34, resetsAt: at },
+      { kind: 'seven_day_opus', percentUsed: 50, resetsAt: at },
+    ])
+    expect(engine).toEqual({ seven_day_overage_included: { used_percentage: 34, resets_at: NOW + 3 * DAY } })
+    // Same guards: clamped, a reset past the 8-day horizon is dropped.
+    expect(sanitizeRl({ seven_day_overage_included: { used_percentage: 250, resets_at: NOW + 20 * DAY } }, NOW))
+      .toEqual({ seven_day_overage_included: { used_percentage: 100 } })
+    const s = snap({ fromShared: true, weekUsd: null, rl: { ...snap().rl, ...engine } })
+    expect(plainLine(buildLine(s, DEFAULTS, NOW))).toMatch(/\| 📅 7d 10% →2d5h \| 📖 fable 34% →3d0h ⇄ \| 🤖/)
+    // No Fable reading: the line is the one it was.
+    expect(plainLine(buildLine(snap(), DEFAULTS, NOW))).not.toMatch(/fable/)
+  })
+
+  test('the Fable window ranks last: it breaks a tie, never outranks 5h or 7d', () => {
+    const base = {
+      five_hour: { used_percentage: 20, resets_at: NOW + HOUR },
+      seven_day: { used_percentage: 10, resets_at: NOW + 2 * DAY },
+    }
+    const fable = { seven_day_overage_included: { used_percentage: 34, resets_at: NOW + 3 * DAY } }
+    const mine = { ...base, ...fable }
+    expect(syncRateLimits(mine, { rate_limits: base }, NOW)).toEqual({ rl: mine, fromShared: false, publish: mine })
+    const fresher5h = { ...base, five_hour: { used_percentage: 21, resets_at: NOW + HOUR } }
+    expect(syncRateLimits(mine, { rate_limits: fresher5h }, NOW)).toEqual({ rl: fresher5h, fromShared: true, publish: null })
+    const fresher7d = { ...base, seven_day: { used_percentage: 11, resets_at: NOW + 2 * DAY } }
+    expect(syncRateLimits(mine, { rate_limits: fresher7d }, NOW)).toEqual({ rl: fresher7d, fromShared: true, publish: null })
   })
 })
 
@@ -326,5 +366,10 @@ describe('alerts', () => {
       was = is
     }
     expect(toasts).toEqual(['5h limit at 88%, resets →1h20m'])
+  })
+
+  test('the Fable weekly window toasts under its own label', () => {
+    const hot = snap({ rl: { seven_day_overage_included: { used_percentage: 90, resets_at: NOW + 2 * DAY + 5 } } })
+    expect(newAlerts({}, levelsOf(hot, DEFAULTS), hot, NOW)).toEqual(['fable limit at 90%, resets →2d0h'])
   })
 })

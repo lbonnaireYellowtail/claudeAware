@@ -204,7 +204,7 @@ def rl_freshness(rl):
         return float(v) if _finite(v) else -1.0
 
     key = []
-    for w in ("five_hour", "seven_day"):
+    for w, _horizon, _icon, _label in _WINDOWS:
         win = (rl or {}).get(w) or {}
         reset = win.get("resets_at")
         if not _finite(reset):
@@ -213,13 +213,25 @@ def rl_freshness(rl):
     return key
 
 
-# Plausibility bound for resets_at, PER WINDOW: a rolling window can never
-# reset further out than its own length (plus slack for clock skew / rollover).
-# A far-future resets_at sorts first in the freshness key, so a flat bound wide
-# enough to be safe (e.g. 30d) would still let a poison with resets_at inside
-# that bound win forever and pin a red alarm; keying the bound to each window's
-# real length is what actually makes poison overwritable by a legit session.
-_RESET_HORIZON = {"five_hour": 6 * 3600, "seven_day": 8 * 24 * 3600}
+# The windows, in freshness-key and line order: (key, reset horizon, icon,
+# label). Same table as WINDOWS in aware-mod/hooks/core.ts.
+#
+# The horizon is the plausibility bound for resets_at, PER WINDOW: a rolling
+# window can never reset further out than its own length (plus slack for clock
+# skew / rollover). A far-future resets_at sorts first in the freshness key, so
+# a flat bound wide enough to be safe (e.g. 30d) would still let a poison with
+# resets_at inside that bound win forever and pin a red alarm; keying the bound
+# to each window's real length is what actually makes poison overwritable by a
+# legit session.
+#
+# `seven_day_overage_included` is the Fable-only weekly window, under Claude
+# Code's own name for it; it is optional and drawn only when the payload
+# carries it. Last in the tuple: the key of a reading without one is unchanged.
+_WINDOWS = (
+    ("five_hour", 6 * 3600, "\U0001f550", "5h"),                             # 🕐
+    ("seven_day", 8 * 24 * 3600, "\U0001f4c5", "7d"),                        # 📅
+    ("seven_day_overage_included", 8 * 24 * 3600, "\U0001f4d6", "fable"),    # 📖
+)
 
 
 def _whole_seconds(v):
@@ -230,7 +242,7 @@ def _whole_seconds(v):
 def sanitize_rl(rl, now):
     """Return a rate_limits blob with only trustworthy values (CS-003).
 
-    For each of five_hour / seven_day: drop non-finite numbers and bools
+    For each window in _WINDOWS: drop non-finite numbers and bools
     (rejects NaN and Infinity, which json.loads happily accepts), clamp
     used_percentage to [0,100], and keep resets_at only if it falls within
     that window's own plausible horizon (now <= resets_at <= now + horizon).
@@ -254,11 +266,10 @@ def sanitize_rl(rl, now):
     is preserved.
     """
     out = {}
-    for w in ("five_hour", "seven_day"):
+    for w, horizon, _icon, _label in _WINDOWS:
         win = rl.get(w) if isinstance(rl, dict) else None
         if not isinstance(win, dict):
             continue
-        horizon = _RESET_HORIZON[w]
         clean = {}
         pct = win.get("used_percentage")
         if _finite(pct):
@@ -636,10 +647,7 @@ def main():
     week_usd = weekly_cost(now, cost_window_start(rl, now)) if has_cost else None
 
     used_rl = False
-    for key, icon, label in (
-        ("five_hour", "\U0001f550", "5h"),   # 🕐
-        ("seven_day", "\U0001f4c5", "7d"),   # 📅
-    ):
+    for key, _horizon, icon, label in _WINDOWS:
         win = rl.get(key) or {}
         if isinstance(win.get("used_percentage"), (int, float)):
             suffix = fmt_reset(win.get("resets_at"))
